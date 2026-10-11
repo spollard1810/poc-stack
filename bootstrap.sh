@@ -21,7 +21,7 @@ port_in_use_by_other() {  # <port> -> true if a Service outside this stack alrea
 preflight() {
   log "Preflight"
   local need=() c
-  for c in curl jq git openssl envsubst; do command -v "$c" >/dev/null || need+=("$c"); done
+  for c in curl jq git envsubst; do command -v "$c" >/dev/null || need+=("$c"); done
   if (( ${#need[@]} )); then
     log "Installing missing packages: ${need[*]}"
     need=("${need[@]/envsubst/gettext-base}")

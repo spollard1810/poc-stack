@@ -45,7 +45,7 @@ load_config() {
 }
 
 # Generate random secrets once; re-runs reuse them.
-rand_hex() { openssl rand -hex "${1:-16}"; }
+rand_hex() { od -An -tx1 -N"${1:-16}" /dev/urandom | tr -d ' \n'; }
 ensure_secrets() {
   local changed=0
   touch "$SECRETS_FILE"; chmod 600 "$SECRETS_FILE"
