@@ -8,22 +8,22 @@ urlenc() { jq -rn --arg s "$1" '$s|@uri'; }
 # =============================================================================
 seed_gitea() {
   log "Seeding Gitea"
-  wait_http "$GITEA_HOST" /api/healthz 900 || return 1
+  wait_http "$GITEA_URL" /api/healthz 900 || return 1
   API_AUTH=(-u "${POC_ADMIN_USER}:${POC_ADMIN_PASSWORD}")
 
-  if ! api "$GITEA_HOST" GET /api/v1/orgs/infra >/dev/null 2>&1; then
-    api "$GITEA_HOST" POST /api/v1/orgs \
+  if ! api "$GITEA_URL" GET /api/v1/orgs/infra >/dev/null 2>&1; then
+    api "$GITEA_URL" POST /api/v1/orgs \
       '{"username":"infra","full_name":"Infrastructure","visibility":"private"}' >/dev/null
     ok "gitea: created org infra"
   fi
 
-  if ! api "$GITEA_HOST" GET /api/v1/repos/infra/playbooks >/dev/null 2>&1; then
-    api "$GITEA_HOST" POST /api/v1/orgs/infra/repos \
+  if ! api "$GITEA_URL" GET /api/v1/repos/infra/playbooks >/dev/null 2>&1; then
+    api "$GITEA_URL" POST /api/v1/orgs/infra/repos \
       '{"name":"playbooks","private":true,"default_branch":"main","description":"Ansible playbooks used by AWX"}' >/dev/null
     ok "gitea: created repo infra/playbooks"
   fi
 
-  if [[ $(api "$GITEA_HOST" GET /api/v1/repos/infra/playbooks | jq -r .empty) == true ]]; then
+  if [[ $(api "$GITEA_URL" GET /api/v1/repos/infra/playbooks | jq -r .empty) == true ]]; then
     local tmp auth
     tmp=$(mktemp -d)
     cp -r "$ROOT_DIR/seed/playbooks/." "$tmp/"
@@ -31,9 +31,8 @@ seed_gitea() {
     git -C "$tmp" init -q -b main
     git -C "$tmp" add -A
     git -C "$tmp" -c user.name="PoC Bootstrap" -c user.email="$POC_ADMIN_EMAIL" commit -q -m "Initial playbooks"
-    git -C "$tmp" -c http.curloptResolve="${GITEA_HOST}:80:${NODE_IP}" \
-      -c http.extraHeader="Authorization: Basic ${auth}" \
-      push -q "http://${GITEA_HOST}/infra/playbooks.git" main
+    git -C "$tmp" -c http.extraHeader="Authorization: Basic ${auth}" \
+      push -q "${GITEA_URL}/infra/playbooks.git" main
     rm -rf "$tmp"
     ok "gitea: pushed sample playbooks"
   else
@@ -54,17 +53,17 @@ nb_auth() {
 
 seed_netbox() {
   log "Seeding NetBox"
-  wait_http "$NETBOX_HOST" /api/status/ 1200 || return 1
+  wait_http "$NETBOX_URL" /api/status/ 1200 || return 1
 
   # --- API token (provisioned once, stored in .secrets.env) ---
   if [[ -n ${NETBOX_API_TOKEN:-} ]]; then
     nb_auth
-    api "$NETBOX_HOST" GET /api/users/config/ >/dev/null 2>&1 || NETBOX_API_TOKEN=""
+    api "$NETBOX_URL" GET /api/users/config/ >/dev/null 2>&1 || NETBOX_API_TOKEN=""
   fi
   if [[ -z ${NETBOX_API_TOKEN:-} ]]; then
     local resp key tok
     API_AUTH=()
-    resp=$(api "$NETBOX_HOST" POST /api/users/tokens/provision/ "$(jq -nc \
+    resp=$(api "$NETBOX_URL" POST /api/users/tokens/provision/ "$(jq -nc \
       --arg u "$POC_ADMIN_USER" --arg p "$POC_ADMIN_PASSWORD" \
       '{username:$u, password:$p, description:"poc-bootstrap (AWX inventory)", write_enabled:true}')") || return 1
     key=$(jq -r '.key // empty' <<<"$resp"); tok=$(jq -r '.token // empty' <<<"$resp")
@@ -74,7 +73,7 @@ seed_netbox() {
     ok "netbox: provisioned API token"
   fi
   nb_auth
-  api "$NETBOX_HOST" GET /api/users/config/ >/dev/null || { err "netbox: API token check failed"; return 1; }
+  api "$NETBOX_URL" GET /api/users/config/ >/dev/null || { err "netbox: API token check failed"; return 1; }
   ok "netbox: API token valid (no demo data created - add your own devices)"
 }
 
@@ -85,11 +84,11 @@ seed_netbox() {
 # awx_ensure <endpoint> <name> <json> [create-only] -> prints id
 awx_ensure() {
   local ep=$1 name=$2 body=$3 mode=${4:-} id
-  id=$(api "$AWX_HOST" GET "/api/v2/${ep}/?name=$(urlenc "$name")" | jq -r '.results[0].id // empty')
+  id=$(api "$AWX_URL" GET "/api/v2/${ep}/?name=$(urlenc "$name")" | jq -r '.results[0].id // empty')
   if [[ -n $id ]]; then
-    [[ $mode == create-only ]] || api "$AWX_HOST" PATCH "/api/v2/${ep}/${id}/" "$body" >/dev/null
+    [[ $mode == create-only ]] || api "$AWX_URL" PATCH "/api/v2/${ep}/${id}/" "$body" >/dev/null
   else
-    id=$(api "$AWX_HOST" POST "/api/v2/${ep}/" "$body" | jq -r .id)
+    id=$(api "$AWX_URL" POST "/api/v2/${ep}/" "$body" | jq -r .id)
   fi
   [[ -n $id && $id != null ]] || { err "awx: failed to ensure $ep/$name"; return 1; }
   echo "$id"
@@ -99,7 +98,7 @@ awx_ensure() {
 awx_wait() {
   local path=$1 timeout=${2:-900} t=0 status
   while :; do
-    status=$(api "$AWX_HOST" GET "$path" | jq -r .status)
+    status=$(api "$AWX_URL" GET "$path" | jq -r .status)
     case $status in
       successful) return 0 ;;
       failed|error|canceled) err "awx: $path finished with status $status"; return 1 ;;
@@ -110,15 +109,15 @@ awx_wait() {
 }
 
 awx_cred_type_id() {  # <kind> e.g. scm, ssh
-  api "$AWX_HOST" GET "/api/v2/credential_types/?kind=$1&managed=true" | jq -r '.results[0].id'
+  api "$AWX_URL" GET "/api/v2/credential_types/?kind=$1&managed=true" | jq -r '.results[0].id'
 }
 
 seed_awx() {
   log "Seeding AWX (waiting for AWX to finish its first start - can take ~10 min)"
-  wait_http "$AWX_HOST" /api/v2/ping/ 1800 || return 1
+  wait_http "$AWX_URL" /api/v2/ping/ 1800 || return 1
   API_AUTH=(-u "${POC_ADMIN_USER}:${POC_ADMIN_PASSWORD}")
   local t=0
-  until api "$AWX_HOST" GET /api/v2/me/ >/dev/null 2>&1; do
+  until api "$AWX_URL" GET /api/v2/me/ >/dev/null 2>&1; do
     (( t >= 900 )) && { err "awx: admin login never succeeded"; return 1; }
     sleep 10; t=$((t + 10))
   done
@@ -153,7 +152,7 @@ seed_awx() {
     --arg url "${GITEA_INTERNAL_URL}/infra/playbooks.git" \
     '{name:"playbooks",organization:$o,scm_type:"git",scm_url:$url,scm_branch:"main",credential:$c,
       scm_update_on_launch:true,scm_update_cache_timeout:60}')")
-  upd=$(api "$AWX_HOST" POST "/api/v2/projects/${proj}/update/" '{}' | jq -r .project_update)
+  upd=$(api "$AWX_URL" POST "/api/v2/projects/${proj}/update/" '{}' | jq -r .project_update)
   awx_wait "/api/v2/project_updates/${upd}/" || return 1
   ok "awx: project 'playbooks' synced from Gitea"
 
@@ -162,9 +161,9 @@ seed_awx() {
   src=$(awx_ensure inventory_sources "netbox" "$(jq -nc --argjson i "$inv" --argjson p "$proj" --argjson c "$cr_nb" \
     '{name:"netbox",inventory:$i,source:"scm",source_project:$p,source_path:"inventory/netbox.yml",
       credential:$c,overwrite:true,overwrite_vars:true,update_on_launch:true}')")
-  upd=$(api "$AWX_HOST" POST "/api/v2/inventory_sources/${src}/update/" '{}' | jq -r .inventory_update)
+  upd=$(api "$AWX_URL" POST "/api/v2/inventory_sources/${src}/update/" '{}' | jq -r .inventory_update)
   awx_wait "/api/v2/inventory_updates/${upd}/" || warn "awx: NetBox inventory sync failed - check the job output in AWX"
-  ok "awx: inventory 'NetBox' ($(api "$AWX_HOST" GET "/api/v2/inventories/${inv}/" | jq -r .total_hosts) hosts - re-syncs on every job launch)"
+  ok "awx: inventory 'NetBox' ($(api "$AWX_URL" GET "/api/v2/inventories/${inv}/" | jq -r .total_hosts) hosts - re-syncs on every job launch)"
 
   # Ansible workers: every job runs as its own pod in the awx namespace
   pod_spec=$(cat <<EOF
@@ -196,14 +195,14 @@ EOF
     IFS='|' read -r name pb desc <<<"$body"
     id=$(awx_ensure job_templates "$name" "$(jq -nc --arg n "$name" --arg pb "$pb" --arg d "$desc" \
       --argjson p "$proj" --argjson i "$inv" '{name:$n,description:$d,project:$p,playbook:$pb,inventory:$i,job_type:"run"}')")
-    api "$AWX_HOST" POST "/api/v2/job_templates/${id}/instance_groups/" "{\"id\":$ig}" >/dev/null 2>&1 || true
+    api "$AWX_URL" POST "/api/v2/job_templates/${id}/instance_groups/" "{\"id\":$ig}" >/dev/null 2>&1 || true
     if [[ $pb == hello.yml ]]; then jt_hello=$id; fi
   done
   ok "awx: job templates 'Hello World', 'NetBox Device Report'"
 
   log "Running smoke-test job"
   local job
-  job=$(api "$AWX_HOST" POST "/api/v2/job_templates/${jt_hello}/launch/" '{}' | jq -r .job)
+  job=$(api "$AWX_URL" POST "/api/v2/job_templates/${jt_hello}/launch/" '{}' | jq -r .job)
   awx_wait "/api/v2/jobs/${job}/" 600 && ok "awx: 'Hello World' job #$job succeeded" || warn "awx: 'Hello World' job #$job failed"
   ok "awx: run 'NetBox Device Report' once you have added devices to NetBox"
 }

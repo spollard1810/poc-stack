@@ -20,13 +20,13 @@ persistence:
   storageClass: "${STORAGE_CLASS}"
   size: "${NETBOX_MEDIA_SIZE}"
 
+# Exposed on NODE_IP:NETBOX_PORT (no ingress / DNS)
+service:
+  type: NodePort
+  port: 80
+  nodePort: "${NETBOX_PORT}"
 ingress:
-  enabled: true
-  className: traefik
-  pathType: Prefix
-  hosts:
-    - host: "${NETBOX_HOST}"
-      paths: ["/"]
+  enabled: false
 
 # --- shared PostgreSQL --------------------------------------------------------
 postgresql:

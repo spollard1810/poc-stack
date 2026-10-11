@@ -29,10 +29,10 @@ load_config() {
     NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)
     [[ -n $NODE_IP ]] || NODE_IP=$(hostname -I | awk '{print $1}')
   fi
-  BASE_DOMAIN=${BASE_DOMAIN:-"${NODE_IP}.sslip.io"}
-  NETBOX_HOST="netbox.${BASE_DOMAIN}"
-  AWX_HOST="awx.${BASE_DOMAIN}"
-  GITEA_HOST="git.${BASE_DOMAIN}"
+  # External URLs: node IP + NodePort (no DNS, no ingress)
+  NETBOX_URL="http://${NODE_IP}:${NETBOX_PORT}"
+  AWX_URL="http://${NODE_IP}:${AWX_PORT}"
+  GITEA_URL="http://${NODE_IP}:${GITEA_PORT}"
 
   # In-cluster service addresses
   PG_HOST="postgres.data.svc.cluster.local"
@@ -40,7 +40,7 @@ load_config() {
   GITEA_INTERNAL_URL="http://gitea-http.gitea.svc.cluster.local:3000"
   NETBOX_INTERNAL_URL="http://netbox.netbox.svc.cluster.local"
 
-  export NODE_IP BASE_DOMAIN NETBOX_HOST AWX_HOST GITEA_HOST PG_HOST VALKEY_HOST \
+  export NODE_IP NETBOX_URL AWX_URL GITEA_URL PG_HOST VALKEY_HOST \
          GITEA_INTERNAL_URL NETBOX_INTERNAL_URL
 }
 
@@ -94,34 +94,32 @@ kube_secret() {
 # wait_rollout <ns> <kind/name> [timeout]
 wait_rollout() { kubectl -n "$1" rollout status "$2" --timeout="${3:-600s}"; }
 
-# ---- HTTP via Traefik (no DNS needed: we pin the hostname to NODE_IP) --------
+# ---- HTTP to the apps via NODE_IP:NodePort -----------------------------------
 # Callers set API_AUTH=( -u user:pass ) or ( -H "Authorization: ..." )
 API_AUTH=()
-# api <host> <METHOD> <path> [json-body]   -> prints body; non-zero on HTTP >= 400
+# api <base-url> <METHOD> <path> [json-body]   -> prints body; non-zero on HTTP >= 400
 api() {
-  local host=$1 method=$2 path=$3 data=${4:-}
-  local args=(-sS --max-time 120 --resolve "${host}:80:${NODE_IP}" -X "$method"
-              -H "Accept: application/json" "${API_AUTH[@]}")
+  local base=$1 method=$2 path=$3 data=${4:-}
+  local args=(-sS --max-time 120 -X "$method" -H "Accept: application/json" "${API_AUTH[@]}")
   [[ -n $data ]] && args+=(-H "Content-Type: application/json" --data "$data")
   local out code
-  out=$(curl "${args[@]}" -w $'\n%{http_code}' "http://${host}${path}") || return 1
+  out=$(curl "${args[@]}" -w $'\n%{http_code}' "${base}${path}") || return 1
   code=${out##*$'\n'}; out=${out%$'\n'*}
   if (( code >= 400 )); then
-    err "$method http://${host}${path} -> HTTP $code: ${out:0:400}"
+    err "$method ${base}${path} -> HTTP $code: ${out:0:400}"
     return 1
   fi
   printf '%s' "$out"
 }
 
-# wait_http <host> <path> <timeout-seconds>  : wait for HTTP 200
+# wait_http <base-url> <path> <timeout-seconds>  : wait for HTTP 200
 wait_http() {
-  local host=$1 path=$2 timeout=${3:-900} t=0 code
+  local base=$1 path=$2 timeout=${3:-900} t=0 code
   while :; do
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-      --resolve "${host}:80:${NODE_IP}" "http://${host}${path}" || true)
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${base}${path}" || true)
     [[ $code == 200 ]] && return 0
-    (( t >= timeout )) && { err "timeout waiting for http://${host}${path} (last HTTP $code)"; return 1; }
+    (( t >= timeout )) && { err "timeout waiting for ${base}${path} (last HTTP $code)"; return 1; }
     sleep 10; t=$((t + 10))
-    (( t % 60 == 0 )) && log "  still waiting for ${host}${path} (HTTP $code, ${t}s)"
+    if (( t % 60 == 0 )); then log "  still waiting for ${base}${path} (HTTP $code, ${t}s)"; fi
   done
 }

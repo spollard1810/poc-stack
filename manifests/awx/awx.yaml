@@ -13,11 +13,10 @@ spec:
   secret_key_secret: awx-secret-key
   postgres_configuration_secret: awx-postgres-configuration
 
-  service_type: ClusterIP
-  ingress_type: ingress
-  ingress_class_name: traefik
-  ingress_hosts:
-    - hostname: ${AWX_HOST}
+  # Exposed on NODE_IP:AWX_PORT (no ingress / DNS)
+  service_type: NodePort
+  nodeport_port: ${AWX_PORT}
+  ingress_type: none
 
   web_replicas: 1
   task_replicas: 1
@@ -35,4 +34,4 @@ spec:
   extra_settings:
     - setting: CSRF_TRUSTED_ORIGINS
       value:
-        - http://${AWX_HOST}
+        - http://${NODE_IP}:${AWX_PORT}

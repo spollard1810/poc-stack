@@ -4,19 +4,18 @@ One idempotent bootstrap script that stands up a pre-wired network-automation Po
 on a single Ubuntu 26.04 node that already runs k3s.
 
 ```
-                        Traefik (k3s ingress, :80)
-        ┌──────────────────────┼───────────────────────┐
-  netbox.<ip>.sslip.io   awx.<ip>.sslip.io      git.<ip>.sslip.io
-        │                      │                       │
-     NetBox  ◄──inventory──  AWX  ──project sync──►  Gitea
-   (web+worker)        (web, task, operator)        (repos + registry)
-        │                      │  launches                │
-        │               ansible-worker pods               │
-        │             (container group, 1 pod/job)        │
-        └──────────┬───────────┴───────────┬──────────────┘
-              PostgreSQL 16            Valkey 8
-          (netbox, awx, gitea DBs)  (NetBox + Gitea cache/queues)
-                     namespace: data
+            http://<NODE_IP>:30080  :30081  :30082 (+ ssh :30022)
+                        │          │        │
+        ┌───────────────┘          │        └──────────────┐
+     NetBox  ◄──inventory──────── AWX ───project sync──►  Gitea
+   (web+worker)            (web, task, operator)     (repos + registry)
+        │                          │ launches               │
+        │                  ansible-worker pods              │
+        │                (container group, 1 pod/job)       │
+        └────────────┬─────────────┴──────────┬─────────────┘
+               PostgreSQL 16              Valkey 8
+           (netbox, awx, gitea DBs)   (NetBox + Gitea cache/queues)
+              namespace: data - cluster-internal only, no external port
 ```
 
 | Component | Version | Namespace | How it's installed |
@@ -30,7 +29,8 @@ on a single Ubuntu 26.04 node that already runs k3s.
 
 ## Requirements
 
-- Ubuntu 26.04 with k3s, using the **built-in Traefik and `local-path` storage** (k3s defaults)
+- Ubuntu 26.04 with k3s and the default `local-path` storage class
+- NodePorts 30080, 30081, 30082 and 30022 free on the node (you can change them in `config.env`)
 - 8 vCPU / 16+ GB RAM / ~60 GB free disk (tested target: 8 vCPU / 32 GB)
 - Outbound internet access (container images, Helm charts, Ansible Galaxy)
 - `sudo` access (installs `helm`, `jq`, `gettext-base` if missing)
@@ -39,7 +39,7 @@ on a single Ubuntu 26.04 node that already runs k3s.
 
 ```bash
 git clone <your-git-server>/poc-stack.git && cd poc-stack
-vi config.env                    # optional: change the admin password, sizes, NODE_IP
+vi config.env                    # optional: admin password, ports, sizes, NODE_IP
 sudo ./bootstrap.sh              # ~15-20 min on first run
 ```
 
@@ -48,19 +48,24 @@ They are also saved to `.generated/ACCESS.txt`.
 
 **Default login for all three apps:** `pocadmin` / `ChangeMe-PoC-2026`. Change this in `config.env` before the first run.
 
-### No DNS needed
-Hostnames are `<app>.<NODE_IP>.sslip.io`. sslip.io is a public DNS service that resolves
-these names back to `NODE_IP`, so they work from any machine with internet access.
-If your machines can't reach public DNS, add one line to your hosts file:
-```
-10.0.0.50  netbox.10.0.0.50.sslip.io awx.10.0.0.50.sslip.io git.10.0.0.50.sslip.io
-```
-The bootstrap itself never relies on DNS. It pins those names to the node IP internally.
+### Access: node IP + port, no DNS
+There is no DNS, no hostnames and no ingress. Each app is a Kubernetes NodePort service
+on the machine's IP:
+
+| App | URL |
+|---|---|
+| NetBox | `http://<NODE_IP>:30080` |
+| AWX | `http://<NODE_IP>:30081` |
+| Gitea | `http://<NODE_IP>:30082` (git over ssh: `ssh://git@<NODE_IP>:30022/...`) |
+
+PostgreSQL and Valkey have **no external port**. Only pods inside the cluster can reach them.
+AWX reaches Gitea and NetBox over internal cluster addresses. For a database shell, run
+`kubectl -n data exec -it postgres-0 -- psql -U postgres`.
 
 ## What comes pre-configured
 
 **Gitea**
-- Admin user `pocadmin`, open registration turned off
+- Admin user `pocadmin`, open registration turned off, clone URLs use `http://<NODE_IP>:30082`
 - Org `infra` with a private repo `infra/playbooks`, seeded from `seed/playbooks/`
 - Built-in container registry turned on (for custom execution environments)
 - SSH clone on NodePort `30022`
@@ -108,7 +113,7 @@ sudo ./bootstrap.sh            # everything (safe to re-run)
 sudo ./bootstrap.sh data       # only Postgres + Valkey
 sudo ./bootstrap.sh apps       # only Gitea / NetBox / AWX
 sudo ./bootstrap.sh seed       # only (re-)apply the base configuration
-sudo ./bootstrap.sh status     # pods + ingresses
+sudo ./bootstrap.sh status     # pods + exposed ports
 sudo ./bootstrap.sh info       # URLs + credentials
 sudo ./destroy.sh [--purge]    # delete everything INCLUDING DATA
 ```
@@ -140,6 +145,7 @@ ee/                       optional custom execution environment definition
 | AWX never comes up | `kubectl -n awx logs deploy/awx-operator-controller-manager -c awx-manager -f` |
 | NetBox pod restarting | `kubectl -n netbox logs deploy/netbox` (first start runs DB migrations, which takes a few minutes) |
 | Inventory sync fails | AWX → Jobs → the inventory update's output. Usually Galaxy can't be reached or the token is wrong |
+| Page won't load | `sudo ./bootstrap.sh status`. Check the pods are Running and the NodePort shown matches. Also check the host firewall (`sudo ufw status`) |
 | Changed the admin password | Edit `config.env`, then `sudo ./bootstrap.sh`. Gitea and AWX pick it up. In NetBox, change it in the UI |
 
 ## PoC caveats (not production)

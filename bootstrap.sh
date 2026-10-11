@@ -13,6 +13,11 @@ source seed/seed.sh
 SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
 
 # -----------------------------------------------------------------------------
+port_in_use_by_other() {  # <port> -> true if a Service outside this stack already owns the NodePort
+  kubectl get svc -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.spec.ports[*].nodePort}{"
+"}{end}' 2>/dev/null     | awk -v p="$1" '$1 !~ /^(netbox|awx|gitea)$/ { for (i = 2; i <= NF; i++) if ($i == p) found = 1 } END { exit !found }'
+}
+
 preflight() {
   log "Preflight"
   local need=() c
@@ -34,12 +39,17 @@ preflight() {
   kubectl get nodes >/dev/null 2>&1 || die "Cannot reach the cluster. Run with sudo, or:
     mkdir -p ~/.kube && sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config && sudo chown \$USER ~/.kube/config"
   kubectl get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 || die "StorageClass '$STORAGE_CLASS' not found"
-  kubectl get ingressclass traefik >/dev/null 2>&1 || die "IngressClass 'traefik' not found (k3s started with --disable traefik?)"
+
+  local p
+  for p in "$NETBOX_PORT" "$AWX_PORT" "$GITEA_PORT" "$GITEA_SSH_PORT"; do
+    (( p >= 30000 && p <= 32767 )) || die "Port $p is outside the NodePort range 30000-32767 (see config.env)"
+    if port_in_use_by_other "$p"; then die "NodePort $p is already used by another service (see config.env)"; fi
+  done
 
   local cpus mem
   cpus=$(nproc); mem=$(awk '/MemTotal/ {print int($2/1024/1024)}' /proc/meminfo)
   (( cpus >= 4 && mem >= 15 )) || warn "Only ${cpus} vCPU / ${mem} GB RAM - 8 vCPU / 16+ GB recommended"
-  ok "tools, cluster, storage and ingress OK (node ${NODE_IP}, domain ${BASE_DOMAIN})"
+  ok "tools, cluster and storage OK (apps will be on ${NODE_IP})"
 }
 
 # -----------------------------------------------------------------------------
@@ -120,24 +130,23 @@ info() {
   local f="$GEN_DIR/ACCESS.txt"; mkdir -p "$GEN_DIR"
   cat >"$f" <<EOF
 ================================================================================
- PoC stack - access
+ PoC stack - access (node IP + port, no DNS)
 ================================================================================
- NetBox : http://${NETBOX_HOST}
- AWX    : http://${AWX_HOST}
- Gitea  : http://${GITEA_HOST}      (ssh: ssh://git@${NODE_IP}:30022)
+ NetBox : ${NETBOX_URL}
+ AWX    : ${AWX_URL}
+ Gitea  : ${GITEA_URL}
+          git clone ${GITEA_URL}/infra/playbooks.git
+          ssh://git@${NODE_IP}:${GITEA_SSH_PORT}/infra/playbooks.git
 
  Login (all three) : ${POC_ADMIN_USER} / ${POC_ADMIN_PASSWORD}
  NetBox API token  : ${NETBOX_API_TOKEN:-<not provisioned yet - run ./bootstrap.sh seed>}
 
- In-cluster endpoints
+ Cluster-internal only (no external port)
    PostgreSQL : ${PG_HOST}:5432   (superuser: postgres / see .secrets.env)
    Valkey     : ${VALKEY_HOST}:6379 (password: see .secrets.env)
-   Gitea      : ${GITEA_INTERNAL_URL}
-   NetBox     : ${NETBOX_INTERNAL_URL}
-
- Hostnames use sslip.io (resolves to ${NODE_IP}). Without internet DNS, add to
- /etc/hosts (Linux/mac) or C:\\Windows\\System32\\drivers\\etc\\hosts:
-   ${NODE_IP}  ${NETBOX_HOST} ${AWX_HOST} ${GITEA_HOST}
+   Gitea      : ${GITEA_INTERNAL_URL}   (used by AWX)
+   NetBox     : ${NETBOX_INTERNAL_URL}  (used by AWX)
+   psql shell : kubectl -n data exec -it postgres-0 -- psql -U postgres
 ================================================================================
 EOF
   chmod 600 "$f"; cat "$f"
@@ -148,7 +157,7 @@ status() {
   kubectl get pods -n gitea; echo
   kubectl get pods -n netbox; echo
   kubectl get pods -n awx; echo
-  kubectl get ingress -A
+  kubectl get svc -n netbox netbox; kubectl get svc -n awx awx-service; kubectl get svc -n gitea gitea-http gitea-ssh
 }
 
 # -----------------------------------------------------------------------------
