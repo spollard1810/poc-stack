@@ -1,0 +1,3 @@
+# generated on first run - contains passwords
+.secrets.env
+.generated/

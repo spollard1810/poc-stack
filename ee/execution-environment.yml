@@ -1,0 +1,22 @@
+# OPTIONAL: custom Execution Environment for AWX jobs (not built by bootstrap).
+# Build on any box with Docker/Podman + ansible-builder:
+#   pip install ansible-builder
+#   ansible-builder build -t git.<NODE_IP>.sslip.io/infra/awx-ee-netops:1.0 -f ee/execution-environment.yml
+#   docker push git.<NODE_IP>.sslip.io/infra/awx-ee-netops:1.0   # Gitea container registry
+# (Registry is plain HTTP: add it to Docker "insecure-registries" and to k3s
+#  /etc/rancher/k3s/registries.yaml.) Then add it in AWX > Execution Environments.
+version: 3
+images:
+  base_image:
+    name: quay.io/ansible/awx-ee:24.6.1
+dependencies:
+  galaxy:
+    collections:
+      - name: netbox.netbox
+      - name: ansible.netcommon
+      - name: ansible.utils
+      - name: cisco.ios
+      - name: arista.eos
+  python:
+    - pynetbox
+    - netaddr

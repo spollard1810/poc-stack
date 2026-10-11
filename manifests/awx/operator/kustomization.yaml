@@ -1,0 +1,9 @@
+# AWX operator. The ref/tag is rewritten by bootstrap.sh from AWX_OPERATOR_VERSION.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: awx
+resources:
+  - github.com/ansible/awx-operator/config/default?ref=${AWX_OPERATOR_VERSION}
+images:
+  - name: quay.io/ansible/awx-operator
+    newTag: ${AWX_OPERATOR_VERSION}

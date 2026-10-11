@@ -1,0 +1,10 @@
+---
+# Smoke test: proves AWX -> Gitea -> job pod (ansible worker) works.
+- name: Hello from the PoC
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: "Hello from {{ lookup('ansible.builtin.env', 'HOSTNAME') }} (AWX job pod)"

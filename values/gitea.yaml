@@ -1,0 +1,74 @@
+# Gitea (chart gitea-charts/gitea) - rendered by bootstrap.sh into .generated/
+gitea:
+  admin:
+    username: "${POC_ADMIN_USER}"
+    password: "${POC_ADMIN_PASSWORD}"
+    email: "${POC_ADMIN_EMAIL}"
+    passwordMode: keepUpdated
+
+  config:
+    server:
+      DOMAIN: "${GITEA_HOST}"
+      ROOT_URL: http://${GITEA_HOST}/
+      SSH_DOMAIN: "${NODE_IP}"
+      SSH_PORT: 30022
+    database:
+      DB_TYPE: postgres
+      HOST: ${PG_HOST}:5432
+      NAME: gitea
+      USER: gitea
+      PASSWD: "${GITEA_DB_PASSWORD}"
+      SSL_MODE: disable
+    cache:
+      ADAPTER: redis
+      HOST: redis://:${VALKEY_PASSWORD}@${VALKEY_HOST}:6379/2
+    session:
+      PROVIDER: redis
+      PROVIDER_CONFIG: redis://:${VALKEY_PASSWORD}@${VALKEY_HOST}:6379/3
+    queue:
+      TYPE: redis
+      CONN_STR: redis://:${VALKEY_PASSWORD}@${VALKEY_HOST}:6379/4
+    service:
+      DISABLE_REGISTRATION: true
+    repository:
+      DEFAULT_BRANCH: main
+    packages:
+      ENABLED: true          # built-in container/package registry (for custom EEs)
+    webhook:
+      ALLOWED_HOST_LIST: "*"  # allow webhooks to AWX inside the cluster
+
+persistence:
+  enabled: true
+  storageClass: "${STORAGE_CLASS}"
+  size: "${GITEA_SIZE}"
+
+service:
+  ssh:
+    type: NodePort
+    nodePort: 30022
+
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: "${GITEA_HOST}"
+      paths:
+        - path: /
+  annotations: {}
+
+# Use the shared PostgreSQL / Valkey instead of bundled sub-charts
+postgresql:
+  enabled: false
+postgresql-ha:
+  enabled: false
+valkey:
+  enabled: false
+valkey-cluster:
+  enabled: false
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits: { memory: 1Gi }
+
+test:
+  enabled: false

@@ -1,0 +1,58 @@
+# NetBox (chart netbox-community/netbox) - rendered by bootstrap.sh into .generated/
+superuser:
+  name: "${POC_ADMIN_USER}"
+  email: "${POC_ADMIN_EMAIL}"
+  password: "${POC_ADMIN_PASSWORD}"
+  apiToken: "${NETBOX_SUPERUSER_TOKEN}"
+
+secretKey: "${NETBOX_SECRET_KEY}"
+apiTokenPeppers:
+  "1": "${NETBOX_PEPPER}"
+
+allowedHosts: ["*"]
+loginRequired: false
+timeZone: UTC
+
+resourcesPreset: medium
+
+persistence:
+  enabled: true
+  storageClass: "${STORAGE_CLASS}"
+  size: "${NETBOX_MEDIA_SIZE}"
+
+ingress:
+  enabled: true
+  className: traefik
+  pathType: Prefix
+  hosts:
+    - host: "${NETBOX_HOST}"
+      paths: ["/"]
+
+# --- shared PostgreSQL --------------------------------------------------------
+postgresql:
+  enabled: false
+externalDatabase:
+  host: "${PG_HOST}"
+  port: 5432
+  database: netbox
+  username: netbox
+  password: "${NETBOX_DB_PASSWORD}"
+  options:
+    sslmode: disable
+
+# --- shared Valkey ------------------------------------------------------------
+valkey:
+  enabled: false
+tasksDatabase:
+  host: "${VALKEY_HOST}"
+  port: 6379
+  database: 0
+  password: "${VALKEY_PASSWORD}"
+cachingDatabase:
+  host: "${VALKEY_HOST}"
+  port: 6379
+  database: 1
+  password: "${VALKEY_PASSWORD}"
+
+worker:
+  enabled: true

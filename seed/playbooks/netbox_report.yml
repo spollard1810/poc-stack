@@ -1,0 +1,17 @@
+---
+# Prints what NetBox knows about every device in the inventory.
+# Runs locally (connection: local) so it works before devices are reachable.
+- name: NetBox device report
+  hosts: all
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Show device facts from NetBox
+      ansible.builtin.debug:
+        msg:
+          name: "{{ inventory_hostname }}"
+          site: "{{ sites | default(['?']) | first }}"
+          role: "{{ device_roles | default(['?']) | first }}"
+          platform: "{{ platforms | default(['?']) | first }}"
+          mgmt_ip: "{{ ansible_host | default('none') }}"
+          status: "{{ status.value | default('?') }}"

@@ -1,0 +1,15 @@
+# Dynamic inventory from NetBox.
+# AWX injects NETBOX_API and NETBOX_TOKEN via the "NetBox API" credential.
+# NetBox 4.5+ issues v2 tokens ("nbt_<key>.<secret>") which need "Bearer" auth.
+plugin: netbox.netbox.nb_inventory
+validate_certs: false
+config_context: true
+interfaces: false
+token:
+  type: Bearer
+  value: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
+group_by:
+  - sites
+  - device_roles
+  - platforms
+  - manufacturers
