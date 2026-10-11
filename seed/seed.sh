@@ -126,6 +126,14 @@ seed_awx() {
   local name pb desc id
 
   org=$(awx_ensure organizations "PoC" '{"name":"PoC","description":"PoC organization"}')
+  # Without a Galaxy credential on the org, AWX skips collections/requirements.yml
+  local galaxy
+  galaxy=$(api "$AWX_URL" GET "/api/v2/credentials/?credential_type__kind=galaxy&managed=true" | jq -r '.results[0].id // empty')
+  if [[ -n $galaxy ]]; then
+    api "$AWX_URL" POST "/api/v2/organizations/${org}/galaxy_credentials/" "{\"id\":$galaxy}" >/dev/null 2>&1 || true
+  else
+    warn "awx: no managed Ansible Galaxy credential found - collections will not be installed"
+  fi
 
   ct_nb=$(awx_ensure credential_types "NetBox API" '{
     "name":"NetBox API","kind":"cloud",
@@ -165,6 +173,16 @@ seed_awx() {
   awx_wait "/api/v2/inventory_updates/${upd}/" || warn "awx: NetBox inventory sync failed - check the job output in AWX"
   ok "awx: inventory 'NetBox' ($(api "$AWX_URL" GET "/api/v2/inventories/${inv}/" | jq -r .total_hosts) hosts - re-syncs on every job launch)"
 
+  # Static localhost inventory so the smoke test does not depend on NetBox
+  local inv_local
+  inv_local=$(awx_ensure inventories "Local" "$(jq -nc --argjson o "$org" \
+    '{name:"Local",organization:$o,description:"localhost only - for smoke tests"}')")
+  if [[ $(api "$AWX_URL" GET "/api/v2/inventories/${inv_local}/hosts/?name=localhost" | jq -r .count) == 0 ]]; then
+    api "$AWX_URL" POST "/api/v2/inventories/${inv_local}/hosts/" \
+      '{"name":"localhost","variables":"ansible_connection: local\nansible_python_interpreter: \"{{ ansible_playbook_python }}\""}' >/dev/null
+  fi
+  ok "awx: inventory 'Local' (localhost)"
+
   # Ansible workers: every job runs as its own pod in the awx namespace
   pod_spec=$(cat <<EOF
 apiVersion: v1
@@ -189,12 +207,13 @@ EOF
     '{name:"ansible-workers",is_container_group:true,pod_spec_override:$spec,max_concurrent_jobs:10}')")
   ok "awx: container group 'ansible-workers'"
 
+  local jt_inv
   for body in \
-    "Hello World|hello.yml|Smoke test - runs on localhost in a worker pod" \
-    "NetBox Device Report|netbox_report.yml|Prints NetBox data for every device"; do
-    IFS='|' read -r name pb desc <<<"$body"
+    "Hello World|hello.yml|Smoke test - runs on localhost in a worker pod|$inv_local" \
+    "NetBox Device Report|netbox_report.yml|Prints NetBox data for every device|$inv"; do
+    IFS='|' read -r name pb desc jt_inv <<<"$body"
     id=$(awx_ensure job_templates "$name" "$(jq -nc --arg n "$name" --arg pb "$pb" --arg d "$desc" \
-      --argjson p "$proj" --argjson i "$inv" '{name:$n,description:$d,project:$p,playbook:$pb,inventory:$i,job_type:"run"}')")
+      --argjson p "$proj" --argjson i "$jt_inv" '{name:$n,description:$d,project:$p,playbook:$pb,inventory:$i,job_type:"run"}')")
     api "$AWX_URL" POST "/api/v2/job_templates/${id}/instance_groups/" "{\"id\":$ig}" >/dev/null 2>&1 || true
     if [[ $pb == hello.yml ]]; then jt_hello=$id; fi
   done
