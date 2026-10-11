@@ -13,5 +13,5 @@
           site: "{{ sites | default(['?']) | first }}"
           role: "{{ device_roles | default(['?']) | first }}"
           platform: "{{ platforms | default(['?']) | first }}"
-          mgmt_ip: "{{ ansible_host | default('none') }}"
+          mgmt_ip: "{{ primary_ip4 | default('none (set a primary IP in NetBox)') }}"
           status: "{{ status.value | default('?') }}"
