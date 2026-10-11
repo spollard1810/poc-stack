@@ -105,7 +105,8 @@ wait_awx() {
 }
 
 helm_app() {  # <release> <namespace> <chart> <repo> <version> <values-template>
-  local rel=$1 ns=$2 chart=$3 repo=$4 ver=$5 tpl=$6 out="$GEN_DIR/$rel-values.yaml"
+  local rel=$1 ns=$2 chart=$3 repo=$4 ver=$5 tpl=$6
+  local out="$GEN_DIR/$rel-values.yaml"
   mkdir -p "$GEN_DIR"; render "$tpl" >"$out"; chmod 600 "$out"
   log "Helm: $rel ($chart $ver)"
   helm upgrade --install "$rel" "$chart" --repo "$repo" --version "$ver" \
