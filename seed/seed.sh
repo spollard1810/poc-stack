@@ -161,7 +161,7 @@ seed_awx() {
   proj=$(awx_ensure projects "playbooks" "$(jq -nc --argjson o "$org" --argjson c "$cr_gitea" \
     --arg url "${GITEA_INTERNAL_URL}/infra/playbooks.git" \
     '{name:"playbooks",organization:$o,scm_type:"git",scm_url:$url,scm_branch:"main",credential:$c,
-      scm_update_on_launch:true,scm_update_cache_timeout:60}')")
+      scm_update_on_launch:true,scm_update_cache_timeout:0}')")
   upd=$(api "$AWX_URL" POST "/api/v2/projects/${proj}/update/" '{}' | jq -r .project_update)
   awx_wait "/api/v2/project_updates/${upd}/" || return 1
   ok "awx: project 'playbooks' synced from Gitea"
