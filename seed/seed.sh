@@ -36,7 +36,8 @@ seed_gitea() {
     rm -rf "$tmp"
     ok "gitea: pushed sample playbooks"
   else
-    ok "gitea: infra/playbooks already has content (left untouched)"
+    # Bring in new/updated examples; files edited in Gitea are left alone
+    "$ROOT_DIR/tools/sync-playbooks.sh"
   fi
 }
 
@@ -152,8 +153,9 @@ seed_awx() {
   cr_nb=$(awx_ensure credentials "NetBox" "$(jq -nc --argjson o "$org" --argjson t "$ct_nb" \
     --arg url "$NETBOX_INTERNAL_URL" --arg tok "$NETBOX_API_TOKEN" \
     '{name:"NetBox",organization:$o,credential_type:$t,inputs:{NETBOX_API:$url,NETBOX_TOKEN:$tok}}')")
-  awx_ensure credentials "Lab devices" "$(jq -nc --argjson o "$org" --argjson t "$ct_ssh" \
-    '{name:"Lab devices",organization:$o,credential_type:$t,description:"Placeholder - set real device creds",inputs:{username:"ansible"}}')" create-only >/dev/null
+  local cr_lab
+  cr_lab=$(awx_ensure credentials "Lab devices" "$(jq -nc --argjson o "$org" --argjson t "$ct_ssh" \
+    '{name:"Lab devices",organization:$o,credential_type:$t,description:"Placeholder - set real device creds",inputs:{username:"ansible"}}')" create-only)
   ok "awx: org + credentials (Gitea, NetBox, Lab devices)"
 
   proj=$(awx_ensure projects "playbooks" "$(jq -nc --argjson o "$org" --argjson c "$cr_gitea" \
@@ -183,6 +185,17 @@ seed_awx() {
   fi
   ok "awx: inventory 'Local' (localhost)"
 
+  # Static list of devices to discover/onboard, kept in Git (inventory/onboard.yml)
+  local inv_onb src_onb
+  inv_onb=$(awx_ensure inventories "Onboarding" "$(jq -nc --argjson o "$org" \
+    '{name:"Onboarding",organization:$o,description:"Devices to discover - edit inventory/onboard.yml in Gitea"}')")
+  src_onb=$(awx_ensure inventory_sources "onboard-file" "$(jq -nc --argjson i "$inv_onb" --argjson p "$proj" \
+    '{name:"onboard-file",inventory:$i,source:"scm",source_project:$p,source_path:"inventory/onboard.yml",
+      overwrite:true,overwrite_vars:true,update_on_launch:true}')")
+  upd=$(api "$AWX_URL" POST "/api/v2/inventory_sources/${src_onb}/update/" '{}' | jq -r .inventory_update)
+  awx_wait "/api/v2/inventory_updates/${upd}/" || warn "awx: Onboarding inventory sync failed"
+  ok "awx: inventory 'Onboarding' (from inventory/onboard.yml)"
+
   # Ansible workers: every job runs as its own pod in the awx namespace
   pod_spec=$(cat <<EOF
 apiVersion: v1
@@ -207,17 +220,23 @@ EOF
     '{name:"ansible-workers",is_container_group:true,pod_spec_override:$spec,max_concurrent_jobs:10}')")
   ok "awx: container group 'ansible-workers'"
 
-  local jt_inv
+  # name | playbook | description | inventory | credentials (space-separated ids)
+  local jt_inv jt_creds c
   for body in \
-    "Hello World|hello.yml|Smoke test - runs on localhost in a worker pod|$inv_local" \
-    "NetBox Device Report|netbox_report.yml|Prints NetBox data for every device|$inv"; do
-    IFS='|' read -r name pb desc jt_inv <<<"$body"
+    "Hello World|hello.yml|Smoke test - runs on localhost in a worker pod|$inv_local|" \
+    "NetBox Device Report|netbox_report.yml|Prints NetBox data for every device|$inv|" \
+    "NetBox - Load devices|netbox_load_devices.yml|Create/update devices in NetBox from data/netbox_devices.yml|$inv_local|$cr_nb" \
+    "NetBox - Onboard from devices|netbox_onboard_from_devices.yml|SSH to devices in inventory/onboard.yml and add them to NetBox|$inv_onb|$cr_lab $cr_nb"; do
+    IFS='|' read -r name pb desc jt_inv jt_creds <<<"$body"
     id=$(awx_ensure job_templates "$name" "$(jq -nc --arg n "$name" --arg pb "$pb" --arg d "$desc" \
       --argjson p "$proj" --argjson i "$jt_inv" '{name:$n,description:$d,project:$p,playbook:$pb,inventory:$i,job_type:"run"}')")
     api "$AWX_URL" POST "/api/v2/job_templates/${id}/instance_groups/" "{\"id\":$ig}" >/dev/null 2>&1 || true
+    for c in $jt_creds; do
+      api "$AWX_URL" POST "/api/v2/job_templates/${id}/credentials/" "{\"id\":$c}" >/dev/null 2>&1 || true
+    done
     if [[ $pb == hello.yml ]]; then jt_hello=$id; fi
   done
-  ok "awx: job templates 'Hello World', 'NetBox Device Report'"
+  ok "awx: job templates 'Hello World', 'NetBox Device Report', 'NetBox - Load devices', 'NetBox - Onboard from devices'"
 
   log "Running smoke-test job"
   local job

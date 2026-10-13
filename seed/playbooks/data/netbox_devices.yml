@@ -1,0 +1,41 @@
+# Source data for netbox_load_devices.yml. Edit, commit, run the job - NetBox is
+# updated to match. Re-running is safe: existing objects are updated, not duplicated.
+#
+# device_type: the *model* exactly as shown in NetBox > Devices > Device Types
+#              (the display name from the library, e.g. "Catalyst 8300-1N1S-6T" -
+#              not the file name or part number "C8300-1N1S-6T").
+# Anything not listed here is left alone in NetBox (nothing is deleted).
+
+sites:
+  - name: DC1
+    slug: dc1
+    status: active
+    description: Primary data center
+
+device_roles:
+  - { name: Core Router,   slug: core-router,   color: "2196f3" }
+  - { name: Access Switch, slug: access-switch, color: "4caf50" }
+
+platforms:
+  # slug doubles as the Ansible network_os hint for later automation
+  - { name: Cisco IOS-XE, slug: cisco-ios-xe, manufacturer: Cisco }
+  - { name: Arista EOS,   slug: arista-eos,   manufacturer: Arista }
+
+devices:
+  - name: dc1-rtr01
+    site: dc1
+    role: core-router
+    device_type: Catalyst 8300-1N1S-6T
+    platform: cisco-ios-xe
+    serial: ""
+    status: active
+    mgmt_interface: GigabitEthernet0
+    mgmt_ip: 192.168.254.11/24
+  - name: dc1-sw01
+    site: dc1
+    role: access-switch
+    device_type: DCS-7050SX3-48YC8-F
+    platform: arista-eos
+    status: active
+    mgmt_interface: Management1
+    mgmt_ip: 192.168.254.21/24

@@ -1,0 +1,13 @@
+---
+# The stock AWX execution environment (awx-ee) does not ship pynetbox, which the
+# netbox.netbox modules need. NetBox 4.5+ "nbt_" tokens need pynetbox >= 7.6.
+# For a PoC we install it into the job pod at runtime (needs internet / PyPI).
+# Long term: bake it into a custom EE instead (see ee/ in the poc-stack repo).
+- name: Ensure pynetbox is available to Ansible
+  ansible.builtin.command: >-
+    {{ ansible_playbook_python }} -m pip install --user --disable-pip-version-check
+    "pynetbox>=7.6,<7.9" netaddr
+  register: _pip
+  changed_when: "'Successfully installed' in _pip.stdout"
+  delegate_to: localhost
+  run_once: true

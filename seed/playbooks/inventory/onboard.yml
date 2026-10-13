@@ -1,0 +1,27 @@
+# Devices to discover and onboard into NetBox (netbox_onboard_from_devices.yml).
+# Only the management IP, platform and where it belongs are needed - the rest
+# (model, serial, OS version, hostname) is read from the device itself.
+#
+# The device type is matched on the SKU the device reports (library part_number).
+# If that does not match, set nb_device_type: "<model name as shown in NetBox>".
+#
+# ansible_network_os: cisco.ios.ios | arista.eos.eos | junipernetworks.junos.junos | cisco.nxos.nxos
+# Login comes from the AWX Machine credential ("Lab devices") - never put it here.
+all:
+  children:
+    onboard:
+      vars:
+        ansible_connection: ansible.netcommon.network_cli
+        nb_site: dc1
+        nb_status: active
+      hosts:
+        192.168.254.11:
+          ansible_network_os: cisco.ios.ios
+          nb_role: core-router
+          nb_platform: cisco-ios-xe
+        192.168.254.21:
+          ansible_network_os: arista.eos.eos
+          ansible_become: true
+          ansible_become_method: enable
+          nb_role: access-switch
+          nb_platform: arista-eos

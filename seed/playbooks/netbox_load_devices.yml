@@ -1,0 +1,98 @@
+---
+# Declarative load: data/netbox_devices.yml (in Git) -> NetBox.
+# Creates/updates sites, roles, platforms, devices, a mgmt interface + IP per
+# device, and sets that IP as the device's primary IPv4. Never deletes anything.
+#
+# AWX : job template "NetBox - Load devices" (inventory "Local", credential "NetBox")
+# CLI : NETBOX_API=http://<node-ip>:30080 NETBOX_TOKEN=nbt_... ansible-playbook netbox_load_devices.yml
+- name: Load devices into NetBox from data/netbox_devices.yml
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - data/netbox_devices.yml
+  module_defaults:
+    group/netbox.netbox.netbox:
+      netbox_url: "{{ lookup('ansible.builtin.env', 'NETBOX_API') }}"
+      netbox_token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
+      validate_certs: false
+
+  tasks:
+    - name: Prepare
+      ansible.builtin.include_tasks: tasks/ensure_pynetbox.yml
+
+    - name: Sites
+      netbox.netbox.netbox_site:
+        data:
+          name: "{{ item.name }}"
+          slug: "{{ item.slug }}"
+          status: "{{ item.status | default('active') }}"
+          description: "{{ item.description | default(omit) }}"
+        state: present
+      loop: "{{ sites }}"
+      loop_control: { label: "{{ item.name }}" }
+
+    - name: Device roles
+      netbox.netbox.netbox_device_role:
+        data: "{{ item }}"
+        state: present
+      loop: "{{ device_roles }}"
+      loop_control: { label: "{{ item.name }}" }
+
+    - name: Platforms
+      netbox.netbox.netbox_platform:
+        data:
+          name: "{{ item.name }}"
+          slug: "{{ item.slug }}"
+          manufacturer: "{{ item.manufacturer | default(omit) }}"
+        state: present
+      loop: "{{ platforms }}"
+      loop_control: { label: "{{ item.name }}" }
+
+    - name: Devices
+      netbox.netbox.netbox_device:
+        data:
+          name: "{{ item.name }}"
+          site: "{{ item.site }}"
+          role: "{{ item.role }}"
+          # dict lookup -> matches the model name exactly as imported from the library
+          device_type:
+            model: "{{ item.device_type }}"
+          platform: "{{ item.platform | default(omit) }}"
+          serial: "{{ item.serial | default(omit, true) }}"
+          status: "{{ item.status | default('active') }}"
+        state: present
+      loop: "{{ devices }}"
+      loop_control: { label: "{{ item.name }}" }
+
+    - name: Management interfaces
+      netbox.netbox.netbox_device_interface:
+        data:
+          device: "{{ item.name }}"
+          name: "{{ item.mgmt_interface }}"
+          type: "{{ item.mgmt_interface_type | default('1000base-t') }}"
+          mgmt_only: true
+        state: present
+      loop: "{{ devices | selectattr('mgmt_interface', 'defined') }}"
+      loop_control: { label: "{{ item.name }} {{ item.mgmt_interface }}" }
+
+    - name: Management IP addresses
+      netbox.netbox.netbox_ip_address:
+        data:
+          address: "{{ item.mgmt_ip }}"
+          status: active
+          assigned_object:
+            device: "{{ item.name }}"
+            name: "{{ item.mgmt_interface }}"
+        state: present
+      loop: "{{ devices | selectattr('mgmt_ip', 'defined') }}"
+      loop_control: { label: "{{ item.name }} {{ item.mgmt_ip }}" }
+
+    - name: Primary IPv4 (becomes ansible_host in the AWX NetBox inventory)
+      netbox.netbox.netbox_device:
+        data:
+          name: "{{ item.name }}"
+          primary_ip4: "{{ item.mgmt_ip }}"
+        state: present
+      loop: "{{ devices | selectattr('mgmt_ip', 'defined') }}"
+      loop_control: { label: "{{ item.name }} -> {{ item.mgmt_ip }}" }

@@ -1,0 +1,80 @@
+---
+# Discovery onboarding: log in to each device (inventory/onboard.yml), read its
+# facts, and create/update it in NetBox: hostname, model, serial, platform,
+# mgmt interface + IP (set as primary IPv4). Use this for brownfield networks;
+# afterwards treat NetBox as the source of truth.
+#
+# AWX : job template "NetBox - Onboard from devices"
+#       inventory "Onboarding", credentials "Lab devices" (SSH) + "NetBox"
+# CLI : NETBOX_API=... NETBOX_TOKEN=... ansible-playbook -i inventory/onboard.yml \
+#         netbox_onboard_from_devices.yml -u <user> -k
+- name: Discover devices and onboard them into NetBox
+  hosts: onboard
+  gather_facts: false
+  module_defaults:
+    group/netbox.netbox.netbox:
+      netbox_url: "{{ lookup('ansible.builtin.env', 'NETBOX_API') }}"
+      netbox_token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
+      validate_certs: false
+
+  tasks:
+    - name: Prepare
+      ansible.builtin.include_tasks: tasks/ensure_pynetbox.yml
+
+    - name: Read facts from the device
+      ansible.builtin.gather_facts:   # dispatches to ios_facts / eos_facts / ... via ansible_network_os
+
+    - name: Pick the name NetBox will use
+      ansible.builtin.set_fact:
+        nb_name: "{{ ansible_net_hostname | default(inventory_hostname) }}"
+        nb_mgmt_ip: "{{ ansible_host | default(inventory_hostname) }}/{{ nb_mgmt_prefixlen | default(24) }}"
+
+    - name: Show what was discovered
+      ansible.builtin.debug:
+        msg: "{{ nb_name }}: model={{ ansible_net_model | default('?') }} serial={{ ansible_net_serialnum | default('?') }} os={{ ansible_net_version | default('?') }}"
+
+    - name: Device
+      netbox.netbox.netbox_device:
+        data:
+          name: "{{ nb_name }}"
+          site: "{{ nb_site }}"
+          role: "{{ nb_role }}"
+          # Devices report their SKU (e.g. C8300-1N1S-6T), which the community library
+          # stores as part_number. Override per host with nb_device_type: "<model name>".
+          device_type: "{{ {'model': nb_device_type} if nb_device_type is defined
+                           else {'part_number': ansible_net_model} }}"
+          platform: "{{ nb_platform | default(omit) }}"
+          serial: "{{ ansible_net_serialnum | default(omit) }}"
+          status: "{{ nb_status }}"
+          comments: "Onboarded by AWX. OS version at discovery: {{ ansible_net_version | default('unknown') }}"
+        state: present
+      delegate_to: localhost
+
+    - name: Management interface
+      netbox.netbox.netbox_device_interface:
+        data:
+          device: "{{ nb_name }}"
+          name: "{{ nb_mgmt_interface | default('mgmt0') }}"
+          type: virtual
+          mgmt_only: true
+        state: present
+      delegate_to: localhost
+
+    - name: Management IP
+      netbox.netbox.netbox_ip_address:
+        data:
+          address: "{{ nb_mgmt_ip }}"
+          status: active
+          assigned_object:
+            device: "{{ nb_name }}"
+            name: "{{ nb_mgmt_interface | default('mgmt0') }}"
+        state: present
+      delegate_to: localhost
+
+    - name: Primary IPv4
+      netbox.netbox.netbox_device:
+        data:
+          name: "{{ nb_name }}"
+          primary_ip4: "{{ nb_mgmt_ip }}"
+        state: present
+      delegate_to: localhost
