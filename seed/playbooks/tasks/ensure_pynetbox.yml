@@ -8,6 +8,6 @@
     {{ ansible_playbook_python }} -m pip install --user --disable-pip-version-check
     "pynetbox>=7.6,<7.9" netaddr
   register: _pip
-  changed_when: "'Successfully installed' in _pip.stdout"
+  changed_when: false   # every AWX job runs in a fresh pod, so this always installs
   delegate_to: localhost
   run_once: true

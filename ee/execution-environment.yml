@@ -18,5 +18,5 @@ dependencies:
       - name: cisco.ios
       - name: arista.eos
   python:
-    - pynetbox
+    - pynetbox>=7.6,<7.9   # 7.6+ needed for NetBox 4.5+ (nbt_) tokens
     - netaddr

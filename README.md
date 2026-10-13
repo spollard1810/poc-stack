@@ -84,7 +84,9 @@ AWX reaches Gitea and NetBox over internal cluster addresses. For a database she
 - Project **playbooks**, pulled from `infra/playbooks` in Gitea, updates on launch
 - Inventory **NetBox**, built dynamically from `inventory/netbox.yml` in the repo with the `netbox.netbox.nb_inventory` plugin. It re-syncs every time a job launches.
 - Instance group **ansible-workers**: a container group whose pod spec sets CPU/RAM limits
-- Job templates **Hello World** and **NetBox Device Report**, both pinned to `ansible-workers`
+- Inventories **NetBox** (dynamic), **Local** (localhost) and **Onboarding** (`inventory/onboard.yml`)
+- Job templates **Hello World**, **NetBox Device Report**, **NetBox - Load devices** and
+  **NetBox - Onboard from devices**, all pinned to `ansible-workers`
 - The bootstrap runs **Hello World** once as an end-to-end check
 
 ### Ansible workers
@@ -98,13 +100,34 @@ kubectl -n awx get pods -l app.kubernetes.io/component=ansible-worker -w
 If you need execution nodes outside the cluster later (for example, close to the devices), AWX
 supports adding them through receptor (AWX → Instances → Add).
 
-## Adding your devices → running automation
+## Getting devices into NetBox
 
-1. In NetBox, create a site, manufacturer, device type, device role and platform, then add devices.
-   Give each device a primary IPv4 address. That address becomes `ansible_host` in the inventory.
-2. In AWX, go to Inventories → NetBox → Sources → **Sync**. Jobs also sync it automatically when they launch.
-3. Run **NetBox Device Report** to see what AWX gets from NetBox.
-4. Put your real login in the **Lab devices** credential, write playbooks in `infra/playbooks`, push, then create job templates.
+**1. Import device types** from the community library (do this first). The maintained
+fork works with NetBox 4.5+ tokens and runs as a one-off pod (nothing to install):
+```bash
+TOKEN=$(sudo grep '^NETBOX_API_TOKEN=' .secrets.env | cut -d= -f2-)
+sudo kubectl -n netbox run nb-dt-import --rm -i --restart=Never --pod-running-timeout=5m   --image=ghcr.io/marcinpsk/device-type-library-import:latest   --env=NETBOX_URL=http://netbox.netbox.svc.cluster.local --env=NETBOX_TOKEN="$TOKEN"   -- --vendors cisco,arista,juniper
+```
+
+**2. Load devices** with one of the two example job templates in AWX:
+
+| Job template | Playbook | Use it when |
+|---|---|---|
+| **NetBox - Load devices** | `netbox_load_devices.yml` | You know what you have. Edit `data/netbox_devices.yml` in Gitea (sites, roles, platforms, devices, mgmt IP), commit, run. Safe to re-run; never deletes anything. |
+| **NetBox - Onboard from devices** | `netbox_onboard_from_devices.yml` | Existing (brownfield) devices. List mgmt IPs in `inventory/onboard.yml`, set the real login in the **Lab devices** credential, run. Reads hostname, model, serial and OS version from each device. |
+
+Both set the mgmt IP as the device's primary IPv4, which becomes `ansible_host` in the AWX
+**NetBox** inventory. Run **NetBox Device Report** to check what AWX sees.
+
+Notes:
+- `device_type` in `data/netbox_devices.yml` is the **model name shown in NetBox** (e.g.
+  `Catalyst 8300-1N1S-6T`). Discovery matches the SKU the device reports against the
+  library's **part number**; override per host with `nb_device_type` if needed.
+- The stock AWX job image has no `pynetbox`; `tasks/ensure_pynetbox.yml` installs it into
+  the job pod at runtime (needs PyPI access). For production, build a custom execution
+  environment from `ee/` instead.
+- New examples added to this repo reach your Gitea with `sudo ./bootstrap.sh seed`
+  (or `sudo ./tools/sync-playbooks.sh`). Files you edited in Gitea are never overwritten.
 
 ## Commands
 
