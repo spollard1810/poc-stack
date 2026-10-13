@@ -11,10 +11,14 @@
 - name: Discover devices and onboard them into NetBox
   hosts: onboard
   gather_facts: false
+  vars:
+    nb_url: "{{ lookup('ansible.builtin.env', 'NETBOX_API') }}"
+    nb_token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
+    nb_auth_header: "{{ ('Bearer ' if nb_token.startswith('nbt_') else 'Token ') ~ nb_token }}"
   module_defaults:
     group/netbox.netbox.netbox:
-      netbox_url: "{{ lookup('ansible.builtin.env', 'NETBOX_API') }}"
-      netbox_token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
+      netbox_url: "{{ nb_url }}"
+      netbox_token: "{{ nb_token }}"
       validate_certs: false
 
   tasks:
@@ -33,16 +37,35 @@
       ansible.builtin.debug:
         msg: "{{ nb_name }}: model={{ ansible_net_model | default('?') }} serial={{ ansible_net_serialnum | default('?') }} os={{ ansible_net_version | default('?') }}"
 
+    # Devices report their SKU (e.g. C8300-1N1S-6T), which the community library
+    # stores as part_number. Override per host with nb_device_type: "<model name>".
+    - name: Look up the device type in NetBox
+      ansible.builtin.uri:
+        url: >-
+          {{ nb_url }}/api/dcim/device-types/?{{ ('model=' ~ (nb_device_type | urlencode))
+          if nb_device_type is defined else ('part_number=' ~ (ansible_net_model | urlencode)) }}
+        headers:
+          Authorization: "{{ nb_auth_header }}"
+        validate_certs: false
+      register: _device_type
+      delegate_to: localhost
+
+    - name: The device type must already exist in NetBox
+      ansible.builtin.assert:
+        that: _device_type.json.count == 1
+        fail_msg: >-
+          No unique device type for '{{ nb_device_type | default(ansible_net_model) }}'
+          (matches: {{ _device_type.json.count }}). Import it from the device-type library,
+          or set nb_device_type for this host in inventory/onboard.yml.
+        quiet: true
+
     - name: Device
       netbox.netbox.netbox_device:
         data:
           name: "{{ nb_name }}"
           site: "{{ nb_site }}"
           device_role: "{{ nb_role }}"     # module name for NetBox's "role"
-          # Devices report their SKU (e.g. C8300-1N1S-6T), which the community library
-          # stores as part_number. Override per host with nb_device_type: "<model name>".
-          device_type: "{{ {'model': nb_device_type} if nb_device_type is defined
-                           else {'part_number': ansible_net_model} }}"
+          device_type: "{{ _device_type.json.results[0].slug }}"
           platform: "{{ nb_platform | default(omit) }}"
           serial: "{{ ansible_net_serialnum | default(omit) }}"
           status: "{{ nb_status }}"

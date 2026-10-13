@@ -11,10 +11,15 @@
   gather_facts: false
   vars_files:
     - data/netbox_devices.yml
+  vars:
+    nb_url: "{{ lookup('ansible.builtin.env', 'NETBOX_API') }}"
+    nb_token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
+    # NetBox 4.5+ tokens (nbt_...) use "Bearer", older ones "Token"
+    nb_auth_header: "{{ ('Bearer ' if nb_token.startswith('nbt_') else 'Token ') ~ nb_token }}"
   module_defaults:
     group/netbox.netbox.netbox:
-      netbox_url: "{{ lookup('ansible.builtin.env', 'NETBOX_API') }}"
-      netbox_token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
+      netbox_url: "{{ nb_url }}"
+      netbox_token: "{{ nb_token }}"
       validate_certs: false
 
   tasks:
@@ -49,15 +54,41 @@
       loop: "{{ platforms }}"
       loop_control: { label: "{{ item.name }}" }
 
+    # The netbox modules look device types up by slug only. Library slugs are
+    # vendor-prefixed (cisco-c8300-1n1s-6t), so resolve them from the model name.
+    - name: Look up device types by model name
+      ansible.builtin.uri:
+        url: "{{ nb_url }}/api/dcim/device-types/?model={{ item | urlencode }}"
+        headers:
+          Authorization: "{{ nb_auth_header }}"
+        validate_certs: false
+      loop: "{{ devices | map(attribute='device_type') | unique }}"
+      register: _device_types
+
+    - name: Every device type must already exist in NetBox
+      ansible.builtin.assert:
+        that: item.json.count == 1
+        fail_msg: >-
+          Device type '{{ item.item }}' not found in NetBox (matches: {{ item.json.count }}).
+          Use the model name exactly as shown under Devices > Device Types, or import it
+          from the community device-type library first.
+        quiet: true
+      loop: "{{ _device_types.results }}"
+      loop_control: { label: "{{ item.item }}" }
+
+    - name: Map model name to slug
+      ansible.builtin.set_fact:
+        device_type_slug: "{{ device_type_slug | default({}) | combine({item.item: item.json.results[0].slug}) }}"
+      loop: "{{ _device_types.results }}"
+      loop_control: { label: "{{ item.item }}" }
+
     - name: Devices
       netbox.netbox.netbox_device:
         data:
           name: "{{ item.name }}"
           site: "{{ item.site }}"
           device_role: "{{ item.role }}"   # module name for NetBox's "role"
-          # dict lookup -> matches the model name exactly as imported from the library
-          device_type:
-            model: "{{ item.device_type }}"
+          device_type: "{{ device_type_slug[item.device_type] }}"
           platform: "{{ item.platform | default(omit) }}"
           serial: "{{ item.serial | default(omit, true) }}"
           status: "{{ item.status | default('active') }}"
