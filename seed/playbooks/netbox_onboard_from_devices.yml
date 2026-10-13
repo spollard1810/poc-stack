@@ -38,7 +38,7 @@
         data:
           name: "{{ nb_name }}"
           site: "{{ nb_site }}"
-          role: "{{ nb_role }}"
+          device_role: "{{ nb_role }}"     # module name for NetBox's "role"
           # Devices report their SKU (e.g. C8300-1N1S-6T), which the community library
           # stores as part_number. Override per host with nb_device_type: "<model name>".
           device_type: "{{ {'model': nb_device_type} if nb_device_type is defined

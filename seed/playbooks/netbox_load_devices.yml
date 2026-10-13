@@ -54,7 +54,7 @@
         data:
           name: "{{ item.name }}"
           site: "{{ item.site }}"
-          role: "{{ item.role }}"
+          device_role: "{{ item.role }}"   # module name for NetBox's "role"
           # dict lookup -> matches the model name exactly as imported from the library
           device_type:
             model: "{{ item.device_type }}"
