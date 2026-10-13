@@ -37,7 +37,7 @@ seed_gitea() {
     ok "gitea: pushed sample playbooks"
   else
     # Bring in new/updated examples; files edited in Gitea are left alone
-    "$ROOT_DIR/tools/sync-playbooks.sh"
+    bash "$ROOT_DIR/tools/sync-playbooks.sh"
   fi
 }
 
