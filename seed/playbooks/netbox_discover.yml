@@ -271,6 +271,18 @@
               Interfaces added: {{ (_tmpl.json.results | default([]) | rejectattr('name', 'in', nb_ifaces.keys() | list) | list | length) + (_new_ifaces.results | default([]) | length) }}, IPv4 addresses reported: {{ nb_ips | default([]) | length }}
 
       rescue:
+        # Facts modules report "The following modules failed"; the real cause is inside
+        - name: Work out why it failed
+          ansible.builtin.set_fact:
+            discovery_error: >-
+              {{ ('Could not read facts from ' ~ (ansible_host | default(inventory_hostname)) ~ ' ('
+                  ~ (ansible_failed_result.failed_modules | dict2items
+                     | map(attribute='key') | zip(ansible_failed_result.failed_modules | dict2items
+                     | map(attribute='value.msg', default='failed')) | map('join', ': ') | join('; '))
+                  ~ '). Check that the IP is reachable from the cluster and that the Lab devices credential works on it.')
+                 if ansible_failed_result.failed_modules is defined
+                 else (ansible_failed_result.msg | default(ansible_failed_result | string)) | truncate(800) }}
+
         - name: Mark as failed
           ansible.builtin.include_tasks: tasks/nb_discovery_state.yml
           vars:
@@ -278,9 +290,9 @@
             journal_kind: danger
             journal_text: |-
               Discovery failed ({{ run_ref }}).
-              {{ ansible_failed_result.msg | default(ansible_failed_result) | string | truncate(800) }}
+              {{ discovery_error }}
               Fix the cause, then add the discover tag again to retry.
 
         - name: Report the failure in the job too
           ansible.builtin.fail:
-            msg: "{{ inventory_hostname }}: {{ ansible_failed_result.msg | default('discovery failed') }}"
+            msg: "{{ inventory_hostname }}: {{ discovery_error }}"
