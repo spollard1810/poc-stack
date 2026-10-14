@@ -53,6 +53,7 @@
         validate_certs: false
       register: _dev
       delegate_to: localhost
+      no_log: true
 
     - name: Remember it
       ansible.builtin.set_fact:
@@ -98,6 +99,7 @@
           register: _dt
           delegate_to: localhost
           when: nb_placeholder_type
+          no_log: true
 
         - name: Decide the device type
           ansible.builtin.set_fact:
@@ -124,6 +126,7 @@
           register: _tmpl
           delegate_to: localhost
           when: nb_new_type
+          no_log: true
 
         - name: Interfaces already on the device
           ansible.builtin.uri:
@@ -132,6 +135,7 @@
             validate_certs: false
           register: _ifs
           delegate_to: localhost
+          no_log: true
 
         - name: Index them by name
           ansible.builtin.set_fact:
@@ -189,6 +193,19 @@
           delegate_to: localhost
 
         # ---------------- IP addresses ----------------
+        - name: Reload the device's interfaces (ids for new ones)
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/dcim/interfaces/?device_id={{ nb_dev.id }}&limit=1000"
+            headers: "{{ nb_api.headers }}"
+            validate_certs: false
+          register: _ifs
+          delegate_to: localhost
+          no_log: true
+
+        - name: Index them by name
+          ansible.builtin.set_fact:
+            nb_ifaces: "{{ dict(_ifs.json.results | map(attribute='name') | zip(_ifs.json.results)) }}"
+
         # ios: ipv4 is a list of {address, subnet}; eos/nxos: one {address, masklen}
         - name: Collect the device's IPv4 addresses
           ansible.builtin.set_fact:
@@ -208,26 +225,48 @@
           loop_control: { label: "{{ item.address }}" }
           register: _ip_lookup
           delegate_to: localhost
+          no_log: true
 
-        # Create new addresses; move ones that sit on this device's placeholder
-        # interface (the mgmt IP); leave addresses owned by anything else alone.
-        - name: IP addresses on their interfaces
-          netbox.netbox.netbox_ip_address:
-            data:
+        - name: Add addresses NetBox doesn't have yet
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/ipam/ip-addresses/"
+            method: POST
+            headers: "{{ nb_api.headers }}"
+            body_format: json
+            body:
               address: "{{ item.item.address }}/{{ item.item.subnet | default(item.item.masklen) | default(32) }}"
               status: active
-              assigned_object:
-                device: "{{ inventory_hostname }}"
-                name: "{{ item.item.iface }}"
-            state: present
+              assigned_object_type: dcim.interface
+              assigned_object_id: "{{ nb_ifaces[item.item.iface].id }}"
+            status_code: 201
+            validate_certs: false
+          loop: "{{ _ip_lookup.results | default([]) }}"
+          loop_control: { label: "{{ item.item.iface }} {{ item.item.address }}" }
+          when: item.json.count == 0 and item.item.iface in nb_ifaces
+          delegate_to: localhost
+          no_log: true
+
+        # The mgmt IP was entered on the placeholder interface; put it on the real one.
+        # Addresses that belong to anything else are left alone.
+        - name: Move the management IP to its real interface
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/ipam/ip-addresses/{{ item.json.results[0].id }}/"
+            method: PATCH
+            headers: "{{ nb_api.headers }}"
+            body_format: json
+            body:
+              assigned_object_type: dcim.interface
+              assigned_object_id: "{{ nb_ifaces[item.item.iface].id }}"
+            validate_certs: false
           loop: "{{ _ip_lookup.results | default([]) }}"
           loop_control: { label: "{{ item.item.iface }} {{ item.item.address }}" }
           when: >-
-            item.json.count == 0 or
-            (item.json.results[0].assigned_object is not none
-             and item.json.results[0].assigned_object.device.id | default(0) == nb_dev.id
-             and item.json.results[0].assigned_object.name == placeholder_iface)
+            item.json.count == 1 and item.item.iface in nb_ifaces
+            and item.json.results[0].assigned_object is not none
+            and item.json.results[0].assigned_object.device.id | default(0) == nb_dev.id
+            and item.json.results[0].assigned_object.name == placeholder_iface
           delegate_to: localhost
+          no_log: true
 
         - name: Is the placeholder interface still holding an address?
           ansible.builtin.uri:
@@ -236,6 +275,7 @@
             validate_certs: false
           register: _placeholder_ips
           delegate_to: localhost
+          no_log: true
 
         - name: Remove the empty placeholder interface
           netbox.netbox.netbox_device_interface:
@@ -254,6 +294,7 @@
             validate_certs: false
           register: _dev
           delegate_to: localhost
+          no_log: true
 
         - name: Mark as discovered
           ansible.builtin.include_tasks: tasks/nb_discovery_state.yml
@@ -275,13 +316,23 @@
         - name: Work out why it failed
           ansible.builtin.set_fact:
             discovery_error: >-
-              {{ ('Could not read facts from ' ~ (ansible_host | default(inventory_hostname)) ~ ' ('
-                  ~ (ansible_failed_result.failed_modules | dict2items
-                     | map(attribute='key') | zip(ansible_failed_result.failed_modules | dict2items
-                     | map(attribute='value.msg', default='failed')) | map('join', ': ') | join('; '))
-                  ~ '). Check that the IP is reachable from the cluster and that the Lab devices credential works on it.')
-                 if ansible_failed_result.failed_modules is defined
-                 else (ansible_failed_result.msg | default(ansible_failed_result | string)) | truncate(800) }}
+              {%- set r = ansible_failed_result -%}
+              {%- if r.failed_modules is defined -%}
+              Could not read facts from {{ ansible_host | default(inventory_hostname) }} ({{
+                r.failed_modules | dict2items | map(attribute='key')
+                | zip(r.failed_modules | dict2items | map(attribute='value.msg', default='failed'))
+                | map('join', ': ') | join('; ') }}). Check that the IP is reachable from the
+              cluster and that the Lab devices credential works on it.
+              {%- elif r.censored is defined or (r.results | default([]) | selectattr('censored', 'defined') | list) -%}
+              A NetBox API call failed (details hidden so the API token is not shown in job
+              output). Check that NetBox is up and the NetBox credential's token is valid.
+              {%- elif r.results is defined -%}
+              {{ (r.results | selectattr('failed', 'defined') | selectattr('failed')
+                  | map(attribute='msg', default='a step failed') | first | default('a step failed'))
+                 | string | truncate(800) }}
+              {%- else -%}
+              {{ r.msg | default(r | string) | string | truncate(800) }}
+              {%- endif -%}
 
         - name: Mark as failed
           ansible.builtin.include_tasks: tasks/nb_discovery_state.yml

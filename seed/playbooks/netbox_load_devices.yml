@@ -64,6 +64,7 @@
         validate_certs: false
       loop: "{{ devices | map(attribute='device_type') | unique }}"
       register: _device_types
+      no_log: true
 
     - name: Every device type must already exist in NetBox
       ansible.builtin.assert:

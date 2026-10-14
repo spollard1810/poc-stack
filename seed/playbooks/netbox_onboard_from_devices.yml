@@ -49,6 +49,7 @@
         validate_certs: false
       register: _device_type
       delegate_to: localhost
+      no_log: true
 
     - name: The device type must already exist in NetBox
       ansible.builtin.assert:

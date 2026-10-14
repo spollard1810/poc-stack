@@ -21,6 +21,7 @@
   register: _nb_patch
   delegate_to: localhost
   changed_when: true
+  no_log: true
 
 - name: Keep the updated device record
   ansible.builtin.set_fact:
@@ -41,3 +42,4 @@
     status_code: 201
   delegate_to: localhost
   when: journal_text is defined
+  no_log: true

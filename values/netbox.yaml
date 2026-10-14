@@ -13,7 +13,12 @@ allowedHosts: ["*"]
 loginRequired: false
 timeZone: UTC
 
-resourcesPreset: medium
+# The chart's "medium" preset caps NetBox at 1.5Gi, which NetBox 4.7 exceeds under
+# bursts of API calls (OOMKilled during discovery testing). Explicit sizing instead.
+resourcesPreset: none
+resources:
+  requests: { cpu: 500m, memory: 1Gi }
+  limits: { memory: 3Gi }
 
 persistence:
   enabled: true
@@ -63,3 +68,7 @@ cachingDatabase:
 
 worker:
   enabled: true
+  resourcesPreset: none
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }
