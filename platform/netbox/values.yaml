@@ -1,13 +1,9 @@
-# NetBox (chart netbox-community/netbox) - rendered by bootstrap.sh into .generated/
+# NetBox (chart netbox-community/netbox), deployed by Argo CD (apps/netbox.yaml).
+# No secrets in this file: passwords and keys live in Kubernetes secrets that
+# bootstrap.sh creates (later: External Secrets from Delinea) and are referenced by name.
 superuser:
-  name: "${POC_ADMIN_USER}"
-  email: "${POC_ADMIN_EMAIL}"
-  password: "${POC_ADMIN_PASSWORD}"
-  apiToken: "${NETBOX_SUPERUSER_TOKEN}"
-
-secretKey: "${NETBOX_SECRET_KEY}"
-apiTokenPeppers:
-  "1": "${NETBOX_PEPPER}"
+  existingSecret: netbox-superuser-secret     # keys: username, password, email, api_token
+existingSecret: netbox-app-secret             # keys: secret_key, api_token_peppers, email_password, ldap_bind_password
 
 allowedHosts: ["*"]
 loginRequired: true             # no pages or API data without login
@@ -20,10 +16,12 @@ resources:
   requests: { cpu: 500m, memory: 1Gi }
   limits: { memory: 3Gi }
 
+# Volumes are never pruned by Argo CD, even if this file stops rendering them.
 persistence:
   enabled: true
   storageClass: "${STORAGE_CLASS}"
   size: "${NETBOX_MEDIA_SIZE}"
+  annotations: { argocd.argoproj.io/sync-options: Prune=false }
 
 # Custom scripts uploaded through the UI/API (e.g. "Add devices for discovery")
 # are files - keep them across pod restarts. Shared by the web and worker pods.
@@ -31,6 +29,7 @@ scriptsPersistence:
   enabled: true
   storageClass: "${STORAGE_CLASS}"
   size: 1Gi
+  annotations: { argocd.argoproj.io/sync-options: Prune=false }
 
 # Exposed on NODE_IP:NETBOX_PORT (no ingress / DNS)
 service:
@@ -40,7 +39,7 @@ service:
 ingress:
   enabled: false
 
-# --- shared PostgreSQL --------------------------------------------------------
+# --- shared PostgreSQL (data namespace) ---------------------------------------
 postgresql:
   enabled: false
 externalDatabase:
@@ -48,23 +47,26 @@ externalDatabase:
   port: 5432
   database: netbox
   username: netbox
-  password: "${NETBOX_DB_PASSWORD}"
+  existingSecretName: netbox-db-secret
+  existingSecretKey: password
   options:
     sslmode: disable
 
-# --- shared Valkey ------------------------------------------------------------
+# --- shared Valkey (data namespace) -------------------------------------------
 valkey:
   enabled: false
 tasksDatabase:
   host: "${VALKEY_HOST}"
   port: 6379
   database: 0
-  password: "${VALKEY_PASSWORD}"
+  existingSecretName: netbox-valkey-secret
+  existingSecretKey: password
 cachingDatabase:
   host: "${VALKEY_HOST}"
   port: 6379
   database: 1
-  password: "${VALKEY_PASSWORD}"
+  existingSecretName: netbox-valkey-secret
+  existingSecretKey: password
 
 worker:
   enabled: true

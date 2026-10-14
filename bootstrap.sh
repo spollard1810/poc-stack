@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PoC stack bootstrap: shared Postgres + Valkey, Gitea, NetBox, AWX (+ workers)
-#  on a single-node k3s. Idempotent - safe to re-run at any time.
+#  PoC stack bootstrap on a single-node k3s. Idempotent - safe to re-run.
+#
+#  Foundation (managed here):  PostgreSQL, Valkey, Gitea, Argo CD
+#  Platform  (managed by Argo CD from the Gitea repo infra/platform): NetBox, AWX
 #
 #  Usage: ./bootstrap.sh [all|preflight|data|apps|seed|status|info]
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$0")"
 source lib/common.sh
+source lib/gitops.sh
 source seed/seed.sh
 
 SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
@@ -15,16 +18,17 @@ SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
 # -----------------------------------------------------------------------------
 port_in_use_by_other() {  # <port> -> true if a Service outside this stack already owns the NodePort
   kubectl get svc -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.spec.ports[*].nodePort}{"
-"}{end}' 2>/dev/null     | awk -v p="$1" '$1 !~ /^(netbox|awx|gitea)$/ { for (i = 2; i <= NF; i++) if ($i == p) found = 1 } END { exit !found }'
+"}{end}' 2>/dev/null     | awk -v p="$1" '$1 !~ /^(netbox|awx|gitea|argocd)$/ { for (i = 2; i <= NF; i++) if ($i == p) found = 1 } END { exit !found }'
 }
 
 preflight() {
   log "Preflight"
   local need=() c
-  for c in curl jq git envsubst; do command -v "$c" >/dev/null || need+=("$c"); done
+  for c in curl jq git envsubst htpasswd; do command -v "$c" >/dev/null || need+=("$c"); done
   if (( ${#need[@]} )); then
     log "Installing missing packages: ${need[*]}"
     need=("${need[@]/envsubst/gettext-base}")
+    need=("${need[@]/htpasswd/apache2-utils}")
     $SUDO apt-get update -qq && $SUDO apt-get install -y -qq "${need[@]}"
   fi
 
@@ -41,7 +45,7 @@ preflight() {
   kubectl get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 || die "StorageClass '$STORAGE_CLASS' not found"
 
   local p
-  for p in "$NETBOX_PORT" "$AWX_PORT" "$GITEA_PORT" "$GITEA_SSH_PORT"; do
+  for p in "$NETBOX_PORT" "$AWX_PORT" "$GITEA_PORT" "$GITEA_SSH_PORT" "$ARGOCD_PORT" "$ARGOCD_HTTPS_PORT"; do
     (( p >= 30000 && p <= 32767 )) || die "Port $p is outside the NodePort range 30000-32767 (see config.env)"
     if port_in_use_by_other "$p"; then die "NodePort $p is already used by another service (see config.env)"; fi
   done
@@ -76,23 +80,6 @@ SQL
 }
 
 # -----------------------------------------------------------------------------
-deploy_awx() {
-  log "AWX operator ${AWX_OPERATOR_VERSION} + AWX instance"
-  mkdir -p "$GEN_DIR/awx-operator"
-  render manifests/awx/operator/kustomization.yaml >"$GEN_DIR/awx-operator/kustomization.yaml"
-  kubectl apply -k "$GEN_DIR/awx-operator" >/dev/null
-  kubectl wait --for=condition=established crd/awxs.awx.ansible.com --timeout=180s >/dev/null
-  wait_rollout awx deployment/awx-operator-controller-manager
-
-  kube_secret awx awx-admin-password password="$POC_ADMIN_PASSWORD"
-  kube_secret awx awx-secret-key secret_key="$AWX_SECRET_KEY"
-  kube_secret awx awx-postgres-configuration \
-    host="$PG_HOST" port=5432 database=awx username=awx password="$AWX_DB_PASSWORD" \
-    sslmode=prefer type=unmanaged
-  apply_tpl manifests/awx/awx.yaml >/dev/null
-  ok "AWX custom resource applied (the operator now builds it in the background)"
-}
-
 wait_awx() {
   log "Waiting for AWX deployments (first install runs DB migrations, ~5-10 min)"
   local t=0
@@ -114,9 +101,16 @@ helm_app() {  # <release> <namespace> <chart> <repo> <version> <values-template>
 }
 
 deploy_apps() {
-  deploy_awx   # start first; the operator works while the helm charts install
-  helm_app gitea  gitea  gitea  https://dl.gitea.com/charts/                   "$GITEA_CHART_VERSION"  values/gitea.yaml
-  helm_app netbox netbox netbox https://charts.netbox.oss.netboxlabs.com/      "$NETBOX_CHART_VERSION" values/netbox.yaml
+  # foundation
+  helm_app gitea gitea gitea https://dl.gitea.com/charts/ "$GITEA_CHART_VERSION" values/gitea.yaml
+  deploy_argocd
+  # platform: secrets out of band, everything else from Git via Argo CD
+  platform_secrets
+  publish_platform_repo
+  argocd_repo_access
+  apply_root_app
+  wait_argocd_apps
+  wait_rollout netbox deployment/netbox 1200s
   wait_awx
 }
 
@@ -140,7 +134,10 @@ info() {
           git clone ${GITEA_URL}/infra/playbooks.git
           ssh://git@${NODE_IP}:${GITEA_SSH_PORT}/infra/playbooks.git
 
- Login (all three) : ${POC_ADMIN_USER} / ${POC_ADMIN_PASSWORD}
+ Argo CD: ${ARGOCD_URL}
+          GitOps repo: ${GITEA_URL}/infra/platform
+
+ Login (all four) : ${POC_ADMIN_USER} / ${POC_ADMIN_PASSWORD}
  NetBox API token  : ${NETBOX_API_TOKEN:-<not provisioned yet - run ./bootstrap.sh seed>}
 
  Cluster-internal only (no external port)
@@ -159,6 +156,7 @@ status() {
   kubectl get pods -n gitea; echo
   kubectl get pods -n netbox; echo
   kubectl get pods -n awx; echo
+  kubectl get applications.argoproj.io -n argocd 2>/dev/null; echo
   kubectl get svc -n netbox netbox; kubectl get svc -n awx awx-service; kubectl get svc -n gitea gitea-http gitea-ssh
 }
 

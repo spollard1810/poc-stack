@@ -33,14 +33,16 @@ load_config() {
   NETBOX_URL="http://${NODE_IP}:${NETBOX_PORT}"
   AWX_URL="http://${NODE_IP}:${AWX_PORT}"
   GITEA_URL="http://${NODE_IP}:${GITEA_PORT}"
+  ARGOCD_URL="http://${NODE_IP}:${ARGOCD_PORT}"
 
   # In-cluster service addresses
   PG_HOST="postgres.data.svc.cluster.local"
   VALKEY_HOST="valkey.data.svc.cluster.local"
   GITEA_INTERNAL_URL="http://gitea-http.gitea.svc.cluster.local:3000"
+  PLATFORM_REPO_URL="${GITEA_INTERNAL_URL}/infra/platform.git"
   NETBOX_INTERNAL_URL="http://netbox.netbox.svc.cluster.local"
 
-  export NODE_IP NETBOX_URL AWX_URL GITEA_URL PG_HOST VALKEY_HOST \
+  export NODE_IP NETBOX_URL AWX_URL GITEA_URL ARGOCD_URL PLATFORM_REPO_URL PG_HOST VALKEY_HOST \
          GITEA_INTERNAL_URL NETBOX_INTERNAL_URL
 }
 
@@ -50,7 +52,7 @@ ensure_secrets() {
   local changed=0
   touch "$SECRETS_FILE"; chmod 600 "$SECRETS_FILE"
   local k
-  for k in PG_SUPERUSER_PASSWORD NETBOX_DB_PASSWORD AWX_DB_PASSWORD GITEA_DB_PASSWORD VALKEY_PASSWORD AWX_EVENTS_PASSWORD; do
+  for k in PG_SUPERUSER_PASSWORD NETBOX_DB_PASSWORD AWX_DB_PASSWORD GITEA_DB_PASSWORD VALKEY_PASSWORD AWX_EVENTS_PASSWORD GITEA_ARGOCD_PASSWORD; do
     grep -q "^$k=" "$SECRETS_FILE" || { echo "$k=$(rand_hex 16)" >>"$SECRETS_FILE"; changed=1; }
   done
   for k in NETBOX_SECRET_KEY NETBOX_PEPPER AWX_SECRET_KEY; do
