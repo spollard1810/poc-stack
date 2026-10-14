@@ -34,6 +34,7 @@
     # Interfaces a device reports that its library template doesn't list are
     # logical ones; this is only used to type those.
     logical_iface_rules:
+      - { re: '^\S+\.\d+$', type: virtual }        # subinterfaces, e.g. Gi0/0/0.100
       - { re: '^(port-channel|po\d|bundle-ether|ae\d)', type: lag }
       - { re: '^(loopback|lo\d|vlan|vl\d|tunnel|tu\d|nve|null|bdi|irb|bvi)', type: virtual }
   module_defaults:
