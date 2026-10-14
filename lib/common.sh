@@ -63,14 +63,15 @@ ensure_secrets() {
   set -a; source "$SECRETS_FILE"; set +a
 }
 
-# Persist a value into .secrets.env (replace if present).
+# Persist a value into .secrets.env (replace if present). Values are written
+# shell-escaped (%q) so ones containing $ (e.g. bcrypt hashes) survive sourcing;
+# plain tokens and hex passwords are written unchanged.
 save_secret() {
-  local k=$1 v=$2
-  if grep -q "^$k=" "$SECRETS_FILE"; then
-    sed -i "s|^$k=.*|$k=$v|" "$SECRETS_FILE"
-  else
-    echo "$k=$v" >>"$SECRETS_FILE"
-  fi
+  local k=$1 v=$2 tmp
+  tmp=$(mktemp)
+  grep -v "^$k=" "$SECRETS_FILE" >"$tmp" || true
+  printf '%s=%q\n' "$k" "$v" >>"$tmp"
+  cat "$tmp" >"$SECRETS_FILE"; rm -f "$tmp"
   export "$k=$v"
 }
 

@@ -1,7 +1,8 @@
 # PoC stack: NetBox + AWX + Gitea on k3s
 
 One idempotent bootstrap script that stands up a pre-wired network-automation PoC
-on a single Ubuntu 26.04 node that already runs k3s.
+on a single Ubuntu 26.04 node that already runs k3s. NetBox and AWX are then managed
+the GitOps way: by **Argo CD** from the Gitea repo **`infra/platform`** (see [GitOps](#gitops)).
 
 ```
             http://<NODE_IP>:30080  :30081  :30082 (+ ssh :30022)
@@ -23,14 +24,15 @@ on a single Ubuntu 26.04 node that already runs k3s.
 | PostgreSQL | 16 | `data` | plain StatefulSet (`manifests/data/postgres.yaml`) |
 | Valkey (Redis-compatible) | 8.1 | `data` | plain StatefulSet (`manifests/data/valkey.yaml`) |
 | Gitea | 1.27.0 (chart 12.7.0) | `gitea` | Helm |
-| NetBox | 4.7.2 (chart 8.3.91) | `netbox` | Helm |
-| AWX | 24.6.1 (operator 2.19.1) | `awx` | awx-operator (kustomize) + `AWX` CR |
+| Argo CD | 3.5.3 (chart 10.9.4) | `argocd` | Helm |
+| NetBox | 4.7.2 (chart 8.3.91) | `netbox` | **Argo CD** (Helm chart + values from `infra/platform`) |
+| AWX | 24.6.1 (operator 2.19.1) | `awx` | **Argo CD** (awx-operator + `AWX` resource from `infra/platform`) |
 | Ansible workers | awx-ee 24.6.1 | `awx` | AWX container group, one pod per job |
 
 ## Requirements
 
 - Ubuntu 26.04 with k3s and the default `local-path` storage class
-- NodePorts 30080, 30081, 30082 and 30022 free on the node (you can change them in `config.env`)
+- NodePorts 30080-30084 and 30022 free on the node (you can change them in `config.env`)
 - 8 vCPU / 16+ GB RAM / ~60 GB free disk (tested target: 8 vCPU / 32 GB)
 - Outbound internet access (container images, Helm charts, Ansible Galaxy)
 - `sudo` access (installs `helm`, `jq`, `gettext-base` if missing)
@@ -46,7 +48,7 @@ sudo ./bootstrap.sh              # ~15-20 min on first run
 The script prints the URLs and logins at the end. Run `./bootstrap.sh info` to see them again.
 They are also saved to `.generated/ACCESS.txt`.
 
-**Default login for all three apps:** `pocadmin` / `ChangeMe-PoC-2026`. Change this in `config.env` before the first run.
+**Default login for all four apps (NetBox, AWX, Gitea, Argo CD):** `pocadmin` / `ChangeMe-PoC-2026`. Change this in `config.env` before the first run.
 
 ### Access: node IP + port, no DNS
 There is no DNS, no hostnames and no ingress. Each app is a Kubernetes NodePort service
@@ -57,6 +59,10 @@ on the machine's IP:
 | NetBox | `http://<NODE_IP>:30080` |
 | AWX | `http://<NODE_IP>:30081` |
 | Gitea | `http://<NODE_IP>:30082` (git over ssh: `ssh://git@<NODE_IP>:30022/...`) |
+| Argo CD | `http://<NODE_IP>:30083` |
+
+**Everything requires a login.** NetBox and Gitea show nothing to anonymous visitors (no
+pages, no API, no repo or user lists); Gitea's only open endpoint is its health check.
 
 PostgreSQL and Valkey have **no external port**. Only pods inside the cluster can reach them.
 AWX reaches Gitea and NetBox over internal cluster addresses. For a database shell, run
@@ -173,12 +179,41 @@ Notes:
 - Calls to NetBox's API in the playbooks use `no_log`, so the API token never appears in AWX
   job output.
 
+## GitOps
+
+```
+ infra/platform (Gitea) ──► Argo CD ──► NetBox, AWX operator, AWX   (synced, self-healing)
+        ▲                      │
+   commit / PR                 └─ reverts manual changes in the cluster within ~3 min
+```
+
+| Layer | Managed by | What's in it |
+|---|---|---|
+| Foundation | `bootstrap.sh` | PostgreSQL, Valkey, Gitea, Argo CD. Argo CD pulls from Gitea, so Gitea can't depend on Argo CD |
+| Platform | **Argo CD**, from `infra/platform` | NetBox, AWX operator, AWX |
+| Secrets | `bootstrap.sh` (later: External Secrets + Delinea) | Kubernetes secrets the platform repo references **by name**. Nothing secret is ever in Git |
+| App settings | `bootstrap.sh seed` (phase 2: config as code) | AWX orgs/credentials/templates, NetBox tags/platforms/event rules, Gitea orgs |
+
+**Changing the platform**: edit `infra/platform` in Gitea (for example bump
+`targetRevision` in `apps/netbox.yaml`, or change `netbox/values.yaml`), commit, and Argo
+CD applies it. Watch it in the Argo CD UI. Don't `helm upgrade` or `kubectl edit` NetBox or
+AWX: Argo CD puts it back.
+
+- The bootstrap creates `infra/platform` from `platform/` on first run. Later runs add or
+  update files only where they still match what the bootstrap wrote, so commits made in
+  Gitea win.
+- Argo CD reads the repo as the Gitea user **`argocd`**: restricted, read-only, and only on
+  `infra/platform` (through the team `gitops-readers`).
+- Argo CD's built-in `admin` is disabled; log in as `pocadmin`.
+- Existing installs: the first GitOps run **adopts** the running NetBox and AWX (same names,
+  same volumes). No data is moved or deleted.
+
 ## Commands
 
 ```bash
 sudo ./bootstrap.sh            # everything (safe to re-run)
 sudo ./bootstrap.sh data       # only Postgres + Valkey
-sudo ./bootstrap.sh apps       # only Gitea / NetBox / AWX
+sudo ./bootstrap.sh apps       # Gitea + Argo CD, publish infra/platform, wait for NetBox / AWX
 sudo ./bootstrap.sh seed       # only (re-)apply the base configuration
 sudo ./bootstrap.sh status     # pods + exposed ports
 sudo ./bootstrap.sh info       # URLs + credentials
@@ -195,12 +230,14 @@ bootstrap.sh              entry point
 destroy.sh                teardown
 config.env                all tunables (domain, admin user, sizes, pinned versions)
 lib/common.sh             helpers (config, secrets, templating, HTTP)
+lib/gitops.sh             Argo CD, platform repo, secrets the platform references
 seed/seed.sh              base configuration for Gitea / NetBox / AWX (via their APIs)
+platform/                 initial content of the infra/platform GitOps repo (Argo CD apps, NetBox values, AWX)
 seed/playbooks/           initial content of the infra/playbooks repo
 netbox-scripts/           NetBox custom scripts (uploaded by the seed step)
-tools/                    netcheck.sh (network overview), sync-playbooks.sh
-manifests/                namespaces, Postgres, Valkey, AWX operator + CR
-values/                   Helm values templates for NetBox and Gitea
+tools/                    netcheck.sh (network overview), sync-repo.sh / sync-playbooks.sh
+manifests/                namespaces, Postgres, Valkey
+values/                   Helm values templates for the foundation (Gitea, Argo CD)
 ee/                       optional custom execution environment definition
 .secrets.env              generated - passwords/tokens (git-ignored)
 .generated/               generated - rendered values, ACCESS.txt (git-ignored)
