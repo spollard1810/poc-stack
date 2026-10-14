@@ -54,7 +54,7 @@ nb_auth() {
 
 seed_netbox() {
   log "Seeding NetBox"
-  wait_http "$NETBOX_URL" /api/status/ 1200 || return 1
+  wait_http "$NETBOX_URL" /login/ 1200 || return 1   # /api/* needs login (LOGIN_REQUIRED)
 
   # --- API token (provisioned once, stored in .secrets.env) ---
   if [[ -n ${NETBOX_API_TOKEN:-} ]]; then

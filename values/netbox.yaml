@@ -10,7 +10,7 @@ apiTokenPeppers:
   "1": "${NETBOX_PEPPER}"
 
 allowedHosts: ["*"]
-loginRequired: false
+loginRequired: true             # no pages or API data without login
 timeZone: UTC
 
 # The chart's "medium" preset caps NetBox at 1.5Gi, which NetBox 4.7 exceeds under

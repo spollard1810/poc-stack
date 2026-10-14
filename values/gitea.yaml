@@ -30,6 +30,9 @@ gitea:
       CONN_STR: redis://:${VALKEY_PASSWORD}@${VALKEY_HOST}:6379/4
     service:
       DISABLE_REGISTRATION: true
+      REQUIRE_SIGNIN_VIEW: true      # nothing (repos, users, API) visible without login
+    service.explore:
+      REQUIRE_SIGNIN_VIEW: true
     repository:
       DEFAULT_BRANCH: main
     packages:
