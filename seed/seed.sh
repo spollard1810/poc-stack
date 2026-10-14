@@ -157,7 +157,7 @@ seed_netbox_events() {
   else wh=$(api "$NETBOX_URL" POST /api/extras/webhooks/ "$body" | jq -r .id); fi
 
   nb_ensure extras/event-rules "name=$(urlenc 'Discovery: after Add devices script')" "$(jq -nc --argjson w "$wh" \
-    '{name:"Discovery: after Add devices script", object_types:["extras.scriptmodule"], event_types:["job_completed"],
+    '{name:"Discovery: after Add devices script", object_types:["extras.script"], event_types:["job_completed"],
       action_type:"webhook", action_object_type:"extras.webhook", action_object_id:$w, enabled:true,
       description:"One AWX run per script run, however many devices were added"}')" >/dev/null
   nb_ensure extras/event-rules "name=$(urlenc 'Discovery: device tagged discover')" "$(jq -nc --argjson w "$wh" \
