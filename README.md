@@ -109,15 +109,53 @@ TOKEN=$(sudo grep '^NETBOX_API_TOKEN=' .secrets.env | cut -d= -f2-)
 sudo kubectl -n netbox run nb-dt-import --rm -i --restart=Never --pod-running-timeout=5m   --image=ghcr.io/marcinpsk/device-type-library-import:latest   --env=NETBOX_URL=http://netbox.netbox.svc.cluster.local --env=NETBOX_TOKEN="$TOKEN"   -- --vendors cisco,arista,juniper
 ```
 
-**2. Load devices** with one of the two example job templates in AWX:
+**2. Set the real device login** in AWX: Credentials → **Lab devices** (username plus
+password or SSH key; privilege escalation method `enable` if your devices need it).
+
+**3. Add devices for discovery** (the main way to add devices). In NetBox go to
+Customization → Scripts → **Add devices for discovery** and enter hostname, management IP and
+platform, or paste a list:
+
+```
+hostname,ip,platform,site
+dc1-rtr01,192.168.254.11/24,cisco
+dc1-sw01,192.168.254.21/24,arista
+```
+
+Platform can be `cisco` (IOS / IOS-XE), `nxos`, `arista` or `juniper`. Site is optional
+(default **Unassigned**); so is role.
+
+When the script finishes, NetBox launches **NetBox - Discover devices** in AWX once for the
+whole batch. The job logs into each device and **fills in the empty fields**. It never
+overwrites what you entered:
+
+| Field | What discovery does |
+|---|---|
+| Name, site, role, platform, comments | Never touched |
+| Device type | Replaced only while it's the **Pending discovery** placeholder, matched on the part number the device reports. The type's interfaces (correct names and types, from the library) are added to the device |
+| Serial | Set only if empty |
+| Status | `planned` → `active` only |
+| OS version, last discovered | Always updated (custom fields, **Discovery** group) |
+| Interfaces | Missing ones added (logical ones like VLANs, loopbacks and port-channels too); descriptions only where empty; nothing deleted |
+| IP addresses | New ones added; the management IP moves from the placeholder interface to its real one and stays primary; addresses owned by other devices are left alone |
+
+Progress shows as tags on the device: `discover` → `discovering` → `discovered` or
+`discovery-failed`. Every run writes a **journal entry** on the device (what was found, or
+why it failed). **To re-run discovery for a device, add the `discover` tag back.** A sweep
+also runs every 30 minutes.
+
+If the model isn't in NetBox yet, the device stays on **Pending discovery** and the journal
+names the part number to import. Import it (step 1), then add the `discover` tag again.
+
+**Other ways to load devices** (example job templates in AWX):
 
 | Job template | Playbook | Use it when |
 |---|---|---|
-| **NetBox - Load devices** | `netbox_load_devices.yml` | You know what you have. Edit `data/netbox_devices.yml` in Gitea (sites, roles, platforms, devices, mgmt IP), commit, run. Safe to re-run; never deletes anything. |
-| **NetBox - Onboard from devices** | `netbox_onboard_from_devices.yml` | Existing (brownfield) devices. List mgmt IPs in `inventory/onboard.yml`, set the real login in the **Lab devices** credential, run. Reads hostname, model, serial and OS version from each device. |
+| **NetBox - Load devices** | `netbox_load_devices.yml` | You want devices defined in Git. Edit `data/netbox_devices.yml` in Gitea (sites, roles, platforms, devices, mgmt IP), commit, run. Safe to re-run; never deletes anything. |
+| **NetBox - Onboard from devices** | `netbox_onboard_from_devices.yml` | One-off brownfield import from a static list in `inventory/onboard.yml`. |
 
-Both set the mgmt IP as the device's primary IPv4, which becomes `ansible_host` in the AWX
-**NetBox** inventory. Run **NetBox Device Report** to check what AWX sees.
+All of them set the mgmt IP as the device's primary IPv4, which becomes `ansible_host` in the
+AWX **NetBox** inventory. Run **NetBox Device Report** to check what AWX sees.
 
 Notes:
 - `device_type` in `data/netbox_devices.yml` is the **model name shown in NetBox** (e.g.
@@ -128,6 +166,12 @@ Notes:
   environment from `ee/` instead.
 - New examples added to this repo reach your Gitea with `sudo ./bootstrap.sh seed`
   (or `sudo ./tools/sync-playbooks.sh`). Files you edited in Gitea are never overwritten.
+- How the trigger works: two NetBox event rules (**Discovery: after Add devices script**,
+  **Discovery: device tagged discover**) call AWX through the webhook **AWX - launch
+  discovery**. It authenticates as the AWX user `netbox-events`, which can only launch that
+  one job template.
+- Calls to NetBox's API in the playbooks use `no_log`, so the API token never appears in AWX
+  job output.
 
 ## Commands
 
@@ -153,6 +197,8 @@ config.env                all tunables (domain, admin user, sizes, pinned versio
 lib/common.sh             helpers (config, secrets, templating, HTTP)
 seed/seed.sh              base configuration for Gitea / NetBox / AWX (via their APIs)
 seed/playbooks/           initial content of the infra/playbooks repo
+netbox-scripts/           NetBox custom scripts (uploaded by the seed step)
+tools/                    netcheck.sh (network overview), sync-playbooks.sh
 manifests/                namespaces, Postgres, Valkey, AWX operator + CR
 values/                   Helm values templates for NetBox and Gitea
 ee/                       optional custom execution environment definition
