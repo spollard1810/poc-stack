@@ -10,6 +10,7 @@ gitea:
     server:
       DOMAIN: "${NODE_IP}"
       ROOT_URL: http://${NODE_IP}:${GITEA_PORT}/
+      LANDING_PAGE: login            # home page goes straight to sign-in
       SSH_DOMAIN: "${NODE_IP}"
       SSH_PORT: ${GITEA_SSH_PORT}
     database:
