@@ -75,7 +75,97 @@ seed_netbox() {
   fi
   nb_auth
   api "$NETBOX_URL" GET /api/users/config/ >/dev/null || { err "netbox: API token check failed"; return 1; }
-  ok "netbox: API token valid (no demo data created - add your own devices)"
+  ok "netbox: API token valid"
+
+  seed_netbox_discovery
+}
+
+# nb_ensure <endpoint> <query> <json>  -> prints object id (creates if missing)
+nb_ensure() {
+  local ep=$1 q=$2 body=$3 id
+  id=$(api "$NETBOX_URL" GET "/api/${ep}/?${q}&limit=1" | jq -r '.results[0].id // empty')
+  [[ -n $id ]] || id=$(api "$NETBOX_URL" POST "/api/${ep}/" "$body" | jq -r .id)
+  [[ -n $id && $id != null ]] || { err "netbox: failed to ensure $ep ($q)"; return 1; }
+  echo "$id"
+}
+
+# What "Add devices for discovery" needs that the device-type library doesn't
+# provide: state tags, two custom fields, platforms with Ansible login settings,
+# a placeholder type per vendor, the Unassigned site/role, and the script.
+seed_netbox_discovery() {
+  local t slug color desc
+  for t in "discover|2196f3|Queued: AWX will log in and fill in this device" \
+           "discovering|ff9800|AWX discovery is running" \
+           "discovered|4caf50|Filled in by AWX discovery" \
+           "discovery-failed|f44336|AWX could not discover this device - see its journal"; do
+    IFS='|' read -r slug color desc <<<"$t"
+    nb_ensure extras/tags "slug=$slug" "$(jq -nc --arg s "$slug" --arg c "$color" --arg d "$desc" \
+      '{name:$s, slug:$s, color:$c, description:$d}')" >/dev/null
+  done
+
+  nb_ensure extras/custom-fields "name=os_version" \
+    '{"name":"os_version","label":"OS version","type":"text","object_types":["dcim.device"],"group_name":"Discovery","description":"Read from the device by AWX discovery"}' >/dev/null
+  nb_ensure extras/custom-fields "name=last_discovered" \
+    '{"name":"last_discovered","label":"Last discovered","type":"datetime","object_types":["dcim.device"],"group_name":"Discovery"}' >/dev/null
+
+  # Manufacturers come from the device-type library import. One not imported yet is
+  # created with the library's own name/slug, so a later import merges into it.
+  local p mslug mname pslug pname netos mfr plat
+  for p in "cisco|Cisco|cisco-ios|Cisco IOS / IOS-XE|cisco.ios.ios" \
+           "cisco|Cisco|cisco-nxos|Cisco NX-OS|cisco.nxos.nxos" \
+           "arista|Arista|arista-eos|Arista EOS|arista.eos.eos" \
+           "juniper|Juniper|juniper-junos|Juniper Junos|junipernetworks.junos.junos"; do
+    IFS='|' read -r mslug mname pslug pname netos <<<"$p"
+    mfr=$(nb_ensure dcim/manufacturers "slug=$mslug" "$(jq -nc --arg s "$mslug" --arg n "$mname" '{name:$n, slug:$s}')")
+    nb_ensure dcim/device-types "slug=${mslug}-pending-discovery" "$(jq -nc --argjson m "$mfr" --arg s "${mslug}-pending-discovery" \
+      '{manufacturer:$m, model:"Pending discovery", slug:$s, u_height:0,
+        comments:"Placeholder until AWX discovery matches the real model (by part number) from the device-type library."}')" >/dev/null
+    plat=$(nb_ensure dcim/platforms "slug=$pslug" "$(jq -nc --arg s "$pslug" --arg n "$pname" --argjson m "$mfr" \
+      '{name:$n, slug:$s, manufacturer:$m}')")
+    nb_ensure extras/config-contexts "name=$(urlenc "Ansible login: $pname")" "$(jq -nc --arg n "Ansible login: $pname" --argjson pl "$plat" --arg os "$netos" \
+      '{name:$n, weight:1000, platforms:[$pl], description:"How AWX connects to devices on this platform",
+        data:{ansible_network_os:$os, ansible_connection:"ansible.netcommon.network_cli"}}')" >/dev/null
+  done
+  nb_ensure dcim/sites "slug=unassigned" '{"name":"Unassigned","slug":"unassigned","status":"planned","description":"Devices waiting to be placed"}' >/dev/null
+  nb_ensure dcim/device-roles "slug=unassigned" '{"name":"Unassigned","slug":"unassigned","color":"9e9e9e"}' >/dev/null
+
+  # The custom script: update by file name, create on first install
+  local f="$ROOT_DIR/netbox-scripts/discovery.py" code
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "${API_AUTH[@]}" \
+    -F "file=@${f};filename=discovery.py" "${NETBOX_URL}/api/extras/scripts/upload/discovery.py/")
+  if [[ $code == 404 ]]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${API_AUTH[@]}" \
+      -F "file=@${f};filename=discovery.py" "${NETBOX_URL}/api/extras/scripts/upload/")
+  fi
+  [[ $code == 20[01] ]] || { err "netbox: uploading the discovery script failed (HTTP $code)"; return 1; }
+  ok "netbox: discovery ready (state tags, 4 platforms with login settings, script 'Add devices for discovery')"
+}
+
+# NetBox -> AWX: launch discovery once when the script finishes, or when a device
+# gets the "discover" tag. Runs after seed_awx (needs the job template and token).
+seed_netbox_events() {
+  log "Wiring NetBox events to AWX"
+  nb_auth
+  local launch_url body wh
+  launch_url="http://awx-service.awx.svc.cluster.local/api/v2/job_templates/${AWX_DISCOVERY_JT_ID}/launch/"
+  body=$(jq -nc --arg u "$launch_url" --arg h "Authorization: Bearer ${AWX_EVENTS_TOKEN}" \
+    '{name:"AWX - launch discovery", payload_url:$u, http_method:"POST", http_content_type:"application/json",
+      additional_headers:$h, body_template:"{}", ssl_verification:false, timeout:15,
+      description:"Launches the AWX job template \"NetBox - Discover devices\""}')
+  wh=$(api "$NETBOX_URL" GET "/api/extras/webhooks/?name=$(urlenc 'AWX - launch discovery')" | jq -r '.results[0].id // empty')
+  if [[ -n $wh ]]; then api "$NETBOX_URL" PATCH "/api/extras/webhooks/${wh}/" "$body" >/dev/null
+  else wh=$(api "$NETBOX_URL" POST /api/extras/webhooks/ "$body" | jq -r .id); fi
+
+  nb_ensure extras/event-rules "name=$(urlenc 'Discovery: after Add devices script')" "$(jq -nc --argjson w "$wh" \
+    '{name:"Discovery: after Add devices script", object_types:["extras.scriptmodule"], event_types:["job_completed"],
+      action_type:"webhook", action_object_type:"extras.webhook", action_object_id:$w, enabled:true,
+      description:"One AWX run per script run, however many devices were added"}')" >/dev/null
+  nb_ensure extras/event-rules "name=$(urlenc 'Discovery: device tagged discover')" "$(jq -nc --argjson w "$wh" \
+    '{name:"Discovery: device tagged discover", object_types:["dcim.device"], event_types:["object_updated"],
+      conditions:{and:[{attr:"tags.slug", op:"contains", value:"discover"}]},
+      action_type:"webhook", action_object_type:"extras.webhook", action_object_id:$w, enabled:true,
+      description:"Re-run discovery for a device by adding the discover tag"}')" >/dev/null
+  ok "netbox: event rules launch AWX discovery (script finished, or 'discover' tag added)"
 }
 
 # =============================================================================
@@ -237,6 +327,36 @@ EOF
     if [[ $pb == hello.yml ]]; then jt_hello=$id; fi
   done
   ok "awx: job templates 'Hello World', 'NetBox Device Report', 'NetBox - Load devices', 'NetBox - Onboard from devices'"
+
+  # Discovery: launched by NetBox events, plus a sweep every 30 minutes
+  AWX_DISCOVERY_JT_ID=$(awx_ensure job_templates "NetBox - Discover devices" "$(jq -nc --argjson p "$proj" --argjson i "$inv" \
+    '{name:"NetBox - Discover devices", description:"Fill in the empty fields of devices tagged discover in NetBox",
+      project:$p, playbook:"netbox_discover.yml", inventory:$i, job_type:"run", allow_simultaneous:false}')")
+  api "$AWX_URL" POST "/api/v2/job_templates/${AWX_DISCOVERY_JT_ID}/instance_groups/" "{\"id\":$ig}" >/dev/null 2>&1 || true
+  for c in $cr_lab $cr_nb; do
+    api "$AWX_URL" POST "/api/v2/job_templates/${AWX_DISCOVERY_JT_ID}/credentials/" "{\"id\":$c}" >/dev/null 2>&1 || true
+  done
+  if [[ $(api "$AWX_URL" GET "/api/v2/job_templates/${AWX_DISCOVERY_JT_ID}/schedules/" | jq -r .count) == 0 ]]; then
+    api "$AWX_URL" POST "/api/v2/job_templates/${AWX_DISCOVERY_JT_ID}/schedules/" \
+      '{"name":"Discovery sweep every 30 minutes","rrule":"DTSTART:20260101T000000Z RRULE:FREQ=MINUTELY;INTERVAL=30"}' >/dev/null
+  fi
+
+  # Least-privilege user NetBox launches it as: may only execute that one template
+  local ev_user role tok
+  ev_user=$(api "$AWX_URL" GET "/api/v2/users/?username=netbox-events" | jq -r '.results[0].id // empty')
+  if [[ -z $ev_user ]]; then
+    ev_user=$(api "$AWX_URL" POST /api/v2/users/ "$(jq -nc --arg p "$AWX_EVENTS_PASSWORD" \
+      '{username:"netbox-events", password:$p, first_name:"NetBox", last_name:"event rules"}')" | jq -r .id)
+  fi
+  role=$(api "$AWX_URL" GET "/api/v2/job_templates/${AWX_DISCOVERY_JT_ID}/object_roles/" | jq -r '.results[] | select(.name=="Execute") | .id')
+  api "$AWX_URL" POST "/api/v2/roles/${role}/users/" "{\"id\":$ev_user}" >/dev/null 2>&1 || true
+  if [[ -z ${AWX_EVENTS_TOKEN:-} ]] || [[ $(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${AWX_EVENTS_TOKEN}" "$AWX_URL/api/v2/me/") != 200 ]]; then
+    tok=$(curl -sS -u "netbox-events:${AWX_EVENTS_PASSWORD}" -H 'Content-Type: application/json' \
+      -d '{"description":"NetBox event rules - launch discovery","scope":"write"}' "$AWX_URL/api/v2/tokens/" | jq -r '.token // empty')
+    [[ -n $tok ]] || { err "awx: could not create the netbox-events token"; return 1; }
+    save_secret AWX_EVENTS_TOKEN "$tok"
+  fi
+  ok "awx: job template 'NetBox - Discover devices' (+ 30-min sweep, launch-only user netbox-events)"
 
   log "Running smoke-test job"
   local job

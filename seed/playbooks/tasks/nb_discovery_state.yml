@@ -1,0 +1,43 @@
+---
+# Set a device's discovery state tag and (optionally) write a journal entry.
+# vars: nb_dev (device JSON from the NetBox API), discovery_state
+#       (discovering | discovered | discovery-failed), journal_text, journal_kind
+- name: Work out the device's tags with the new discovery state
+  ansible.builtin.set_fact:
+    _nb_tags: >-
+      {{ ((nb_dev.tags | map(attribute='slug')
+           | reject('in', ['discover', 'discovering', 'discovered', 'discovery-failed']) | list)
+          + [discovery_state])
+         | map('regex_replace', '^(.*)$', '{"slug": "\1"}') | map('from_json') | list }}
+
+- name: "Discovery state -> {{ discovery_state }}"
+  ansible.builtin.uri:
+    url: "{{ nb_url }}/api/dcim/devices/{{ nb_dev.id }}/"
+    method: PATCH
+    headers: { Authorization: "{{ nb_auth_header }}" }
+    body_format: json
+    body: { tags: "{{ _nb_tags }}" }
+    validate_certs: false
+  register: _nb_patch
+  delegate_to: localhost
+  changed_when: true
+
+- name: Keep the updated device record
+  ansible.builtin.set_fact:
+    nb_dev: "{{ _nb_patch.json }}"
+
+- name: Journal entry on the device
+  ansible.builtin.uri:
+    url: "{{ nb_url }}/api/extras/journal-entries/"
+    method: POST
+    headers: { Authorization: "{{ nb_auth_header }}" }
+    body_format: json
+    body:
+      assigned_object_type: dcim.device
+      assigned_object_id: "{{ nb_dev.id }}"
+      kind: "{{ journal_kind | default('info') }}"
+      comments: "{{ journal_text }}"
+    validate_certs: false
+    status_code: 201
+  delegate_to: localhost
+  when: journal_text is defined

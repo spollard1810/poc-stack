@@ -18,7 +18,7 @@ device_roles:
 
 platforms:
   # slug doubles as the Ansible network_os hint for later automation
-  - { name: Cisco IOS-XE, slug: cisco-ios-xe, manufacturer: Cisco }
+  - { name: Cisco IOS / IOS-XE, slug: cisco-ios, manufacturer: Cisco }
   - { name: Arista EOS,   slug: arista-eos,   manufacturer: Arista }
 
 devices:
@@ -26,7 +26,7 @@ devices:
     site: dc1
     role: core-router
     device_type: Catalyst 8300-1N1S-6T
-    platform: cisco-ios-xe
+    platform: cisco-ios
     serial: ""
     status: active
     mgmt_interface: GigabitEthernet0

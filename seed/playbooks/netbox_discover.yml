@@ -1,0 +1,286 @@
+---
+# Discovery: fill in the empty fields of devices tagged "discover" in NetBox.
+#
+# You add a device with hostname, management IP and platform (Customization >
+# Scripts > "Add devices for discovery"). NetBox launches this job in AWX; an
+# AWX schedule also runs it every 30 minutes as a safety net.
+#
+# It FILLS BLANKS and never overwrites what you entered:
+#   device type  - only while it is the "Pending discovery" placeholder; matched on
+#                  the part number the device reports, then the type's interfaces
+#                  (from the device-type library) are added to the device
+#   serial       - only if empty
+#   status       - planned -> active only
+#   OS version / last discovered - always updated (discovery owns these)
+#   interfaces   - missing ones added, descriptions only where empty, none deleted
+#   IPs          - new ones added; the mgmt IP moves from the placeholder interface
+#                  to its real one; IPs belonging to other devices are left alone
+# Name, site, role and platform are never touched.
+# Progress shows as tags: discover -> discovering -> discovered | discovery-failed,
+# with a journal entry per run. Add the "discover" tag again to re-run.
+#
+# AWX : job template "NetBox - Discover devices" (inventory "NetBox",
+#       credentials "Lab devices" + "NetBox")
+- name: Discover devices tagged in NetBox
+  hosts: tags_discover:tag_discover   # group naming differs with the plugin's plurals option
+  gather_facts: false
+  vars:
+    nb_url: "{{ lookup('ansible.builtin.env', 'NETBOX_API') }}"
+    nb_token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
+    nb_auth_header: "{{ ('Bearer ' if nb_token.startswith('nbt_') else 'Token ') ~ nb_token }}"
+    nb_api: { headers: { Authorization: "{{ nb_auth_header }}" }, validate_certs: false }
+    run_ref: "{{ ('AWX job #' ~ awx_job_id) if awx_job_id is defined else 'ansible-playbook' }}"
+    placeholder_iface: mgmt0
+    # Interfaces a device reports that its library template doesn't list are
+    # logical ones; this is only used to type those.
+    logical_iface_rules:
+      - { re: '^(port-channel|po\d|bundle-ether|ae\d)', type: lag }
+      - { re: '^(loopback|lo\d|vlan|vl\d|tunnel|tu\d|nve|null|bdi|irb|bvi)', type: virtual }
+  module_defaults:
+    group/netbox.netbox.netbox:
+      netbox_url: "{{ nb_url }}"
+      netbox_token: "{{ nb_token }}"
+      validate_certs: false
+
+  tasks:
+    - name: Prepare
+      ansible.builtin.include_tasks: tasks/ensure_pynetbox.yml
+
+    - name: Load the device from NetBox
+      ansible.builtin.uri:
+        url: "{{ nb_url }}/api/dcim/devices/?name={{ inventory_hostname | urlencode }}"
+        headers: "{{ nb_api.headers }}"
+        validate_certs: false
+      register: _dev
+      delegate_to: localhost
+
+    - name: Remember it
+      ansible.builtin.set_fact:
+        nb_dev: "{{ _dev.json.results[0] }}"
+        nb_placeholder_type: "{{ _dev.json.results[0].device_type.slug is search('-pending-discovery$') }}"
+
+    - name: Mark as in progress
+      ansible.builtin.include_tasks: tasks/nb_discovery_state.yml
+      vars:
+        discovery_state: discovering
+
+    - name: Discover
+      block:
+        - name: Check the platform tells Ansible how to log in
+          ansible.builtin.assert:
+            that: ansible_network_os is defined
+            fail_msg: >-
+              Platform '{{ nb_dev.platform.name | default('none') }}' has no Ansible login settings.
+              Use Cisco IOS / IOS-XE, Cisco NX-OS, Arista EOS or Juniper Junos, or give the
+              platform a config context that sets ansible_network_os.
+            quiet: true
+
+        - name: Log in and read facts
+          ansible.builtin.gather_facts:
+            gather_subset: [min, interfaces]
+          ignore_unreachable: true
+          register: _facts
+
+        - name: Login must succeed
+          ansible.builtin.assert:
+            that: ansible_net_hostname is defined
+            fail_msg: >-
+              Could not log in to {{ ansible_host | default(inventory_hostname) }} or read its
+              facts: {{ _facts.msg | default('host unreachable') }}
+            quiet: true
+
+        # ---------------- device ----------------
+        - name: Find the device type for the reported part number
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/dcim/device-types/?part_number={{ ansible_net_model | default('') | urlencode }}"
+            headers: "{{ nb_api.headers }}"
+            validate_certs: false
+          register: _dt
+          delegate_to: localhost
+          when: nb_placeholder_type
+
+        - name: Decide the device type
+          ansible.builtin.set_fact:
+            nb_new_type: "{{ _dt.json.results[0] if (nb_placeholder_type and _dt.json.count | default(0) == 1) else {} }}"
+
+        - name: Fill in the device
+          netbox.netbox.netbox_device:
+            data: >-
+              {{ {'name': inventory_hostname, 'site': nb_dev.site.slug,
+                  'custom_fields': {'os_version': ansible_net_version | default(''),
+                                    'last_discovered': now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ')}}
+                 | combine({'device_type': nb_new_type.slug} if nb_new_type else {})
+                 | combine({'serial': ansible_net_serialnum} if (not nb_dev.serial and ansible_net_serialnum | default('')) else {})
+                 | combine({'status': 'active'} if nb_dev.status.value == 'planned' else {}) }}
+            state: present
+          delegate_to: localhost
+
+        # ---------------- interfaces ----------------
+        - name: Library interfaces of the new device type
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/dcim/interface-templates/?device_type_id={{ nb_new_type.id }}&limit=1000"
+            headers: "{{ nb_api.headers }}"
+            validate_certs: false
+          register: _tmpl
+          delegate_to: localhost
+          when: nb_new_type
+
+        - name: Interfaces already on the device
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/dcim/interfaces/?device_id={{ nb_dev.id }}&limit=1000"
+            headers: "{{ nb_api.headers }}"
+            validate_certs: false
+          register: _ifs
+          delegate_to: localhost
+
+        - name: Index them by name
+          ansible.builtin.set_fact:
+            nb_ifaces: "{{ dict(_ifs.json.results | map(attribute='name') | zip(_ifs.json.results)) }}"
+
+        # NetBox only adds a type's components when a device is created, not when
+        # its type changes, so add the library template's interfaces here.
+        - name: Add the device type's interfaces (from the library)
+          netbox.netbox.netbox_device_interface:
+            data:
+              device: "{{ inventory_hostname }}"
+              name: "{{ item.name }}"
+              type: "{{ item.type.value }}"
+              mgmt_only: "{{ item.mgmt_only }}"
+              label: "{{ item.label | default(omit, true) }}"
+            state: present
+          loop: "{{ (_tmpl.json.results | default([])) | rejectattr('name', 'in', nb_ifaces.keys() | list) | list }}"
+          loop_control: { label: "{{ item.name }}" }
+          delegate_to: localhost
+
+        - name: Interfaces the device reports that aren't in NetBox (logical ones)
+          netbox.netbox.netbox_device_interface:
+            data:
+              device: "{{ inventory_hostname }}"
+              name: "{{ item.key }}"
+              type: >-
+                {%- set ns = namespace(t='other') -%}
+                {%- for r in logical_iface_rules -%}
+                  {%- if ns.t == 'other' and (item.key | lower) is match(r.re) -%}{%- set ns.t = r.type -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.t }}
+              description: "{{ item.value.description | default(omit, true) }}"
+            state: present
+          loop: >-
+            {{ ansible_net_interfaces | default({}) | dict2items
+               | rejectattr('key', 'in', nb_ifaces.keys() | list)
+               | rejectattr('key', 'in', (_tmpl.json.results | default([])) | map(attribute='name') | list) | list }}
+          loop_control: { label: "{{ item.key }}" }
+          delegate_to: localhost
+          register: _new_ifaces
+
+        - name: Descriptions where NetBox has none
+          netbox.netbox.netbox_device_interface:
+            data:
+              device: "{{ inventory_hostname }}"
+              name: "{{ item.key }}"
+              description: "{{ item.value.description }}"
+            state: present
+          loop: >-
+            {{ ansible_net_interfaces | default({}) | dict2items
+               | selectattr('key', 'in', nb_ifaces.keys() | list)
+               | selectattr('value.description', 'truthy') | list }}
+          loop_control: { label: "{{ item.key }}" }
+          when: not nb_ifaces[item.key].description
+          delegate_to: localhost
+
+        # ---------------- IP addresses ----------------
+        # ios: ipv4 is a list of {address, subnet}; eos/nxos: one {address, masklen}
+        - name: Collect the device's IPv4 addresses
+          ansible.builtin.set_fact:
+            nb_ips: >-
+              {{ nb_ips | default([]) + (([item.value.ipv4] if item.value.ipv4 is mapping else item.value.ipv4)
+                 | selectattr('address', 'defined')
+                 | map('combine', {'iface': item.key}) | list) }}
+          loop: "{{ ansible_net_interfaces | default({}) | dict2items | selectattr('value.ipv4', 'defined') | list }}"
+          loop_control: { label: "{{ item.key }}" }
+
+        - name: Look up each address in NetBox
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/ipam/ip-addresses/?address={{ item.address | urlencode }}"
+            headers: "{{ nb_api.headers }}"
+            validate_certs: false
+          loop: "{{ nb_ips | default([]) }}"
+          loop_control: { label: "{{ item.address }}" }
+          register: _ip_lookup
+          delegate_to: localhost
+
+        # Create new addresses; move ones that sit on this device's placeholder
+        # interface (the mgmt IP); leave addresses owned by anything else alone.
+        - name: IP addresses on their interfaces
+          netbox.netbox.netbox_ip_address:
+            data:
+              address: "{{ item.item.address }}/{{ item.item.subnet | default(item.item.masklen) | default(32) }}"
+              status: active
+              assigned_object:
+                device: "{{ inventory_hostname }}"
+                name: "{{ item.item.iface }}"
+            state: present
+          loop: "{{ _ip_lookup.results | default([]) }}"
+          loop_control: { label: "{{ item.item.iface }} {{ item.item.address }}" }
+          when: >-
+            item.json.count == 0 or
+            (item.json.results[0].assigned_object is not none
+             and item.json.results[0].assigned_object.device.id | default(0) == nb_dev.id
+             and item.json.results[0].assigned_object.name == placeholder_iface)
+          delegate_to: localhost
+
+        - name: Is the placeholder interface still holding an address?
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/ipam/ip-addresses/?device_id={{ nb_dev.id }}&interface={{ placeholder_iface }}"
+            headers: "{{ nb_api.headers }}"
+            validate_certs: false
+          register: _placeholder_ips
+          delegate_to: localhost
+
+        - name: Remove the empty placeholder interface
+          netbox.netbox.netbox_device_interface:
+            data:
+              device: "{{ inventory_hostname }}"
+              name: "{{ placeholder_iface }}"
+            state: absent
+          when: _placeholder_ips.json.count == 0
+          delegate_to: localhost
+
+        # ---------------- done ----------------
+        - name: Reload the device
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/dcim/devices/{{ nb_dev.id }}/"
+            headers: "{{ nb_api.headers }}"
+            validate_certs: false
+          register: _dev
+          delegate_to: localhost
+
+        - name: Mark as discovered
+          ansible.builtin.include_tasks: tasks/nb_discovery_state.yml
+          vars:
+            nb_dev: "{{ _dev.json }}"
+            discovery_state: discovered
+            type_missing: "{{ nb_placeholder_type and not nb_new_type }}"
+            journal_kind: "{{ 'warning' if type_missing else 'success' }}"
+            journal_text: |-
+              Discovered by {{ run_ref }}.
+              Hostname on device: {{ ansible_net_hostname }}
+              Model: {{ ansible_net_model | default('unknown') }}{{ ' - no device type with this part number in NetBox. Import it from the device-type library, then add the discover tag again.' if type_missing else '' }}
+              Serial: {{ ansible_net_serialnum | default('unknown') }}
+              OS version: {{ ansible_net_version | default('unknown') }}
+              Interfaces added: {{ (_tmpl.json.results | default([]) | rejectattr('name', 'in', nb_ifaces.keys() | list) | list | length) + (_new_ifaces.results | default([]) | length) }}, IPv4 addresses reported: {{ nb_ips | default([]) | length }}
+
+      rescue:
+        - name: Mark as failed
+          ansible.builtin.include_tasks: tasks/nb_discovery_state.yml
+          vars:
+            discovery_state: discovery-failed
+            journal_kind: danger
+            journal_text: |-
+              Discovery failed ({{ run_ref }}).
+              {{ ansible_failed_result.msg | default(ansible_failed_result) | string | truncate(800) }}
+              Fix the cause, then add the discover tag again to retry.
+
+        - name: Report the failure in the job too
+          ansible.builtin.fail:
+            msg: "{{ inventory_hostname }}: {{ ansible_failed_result.msg | default('discovery failed') }}"

@@ -20,6 +20,13 @@ persistence:
   storageClass: "${STORAGE_CLASS}"
   size: "${NETBOX_MEDIA_SIZE}"
 
+# Custom scripts uploaded through the UI/API (e.g. "Add devices for discovery")
+# are files - keep them across pod restarts. Shared by the web and worker pods.
+scriptsPersistence:
+  enabled: true
+  storageClass: "${STORAGE_CLASS}"
+  size: 1Gi
+
 # Exposed on NODE_IP:NETBOX_PORT (no ingress / DNS)
 service:
   type: NodePort

@@ -4,12 +4,15 @@
 plugin: netbox.netbox.nb_inventory
 validate_certs: false
 config_context: true
+# Per-platform config contexts (ansible_network_os, ansible_connection) become host vars
+flatten_config_context: true
 interfaces: false
 token:
   type: Bearer
   value: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
 group_by:
   - sites
+  - tags            # 'tags_discover' = devices waiting for discovery
   - device_roles
   - platforms
   - manufacturers

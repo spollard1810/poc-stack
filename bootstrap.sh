@@ -124,6 +124,7 @@ seed_all() {
   seed_gitea
   seed_netbox
   seed_awx
+  seed_netbox_events
 }
 
 # -----------------------------------------------------------------------------
