@@ -187,20 +187,11 @@
           delegate_to: localhost
           register: _new_ifaces
 
-        - name: Descriptions where NetBox has none
-          netbox.netbox.netbox_device_interface:
-            data:
-              device: "{{ inventory_hostname }}"
-              name: "{{ item.key }}"
-              description: "{{ item.value.description }}"
-            state: present
-          loop: >-
-            {{ nb_reported | dict2items
-               | selectattr('key', 'in', nb_ifaces.keys() | list)
-               | selectattr('value.description', 'truthy') | list }}
-          loop_control: { label: "{{ item.key }}" }
-          when: not nb_ifaces[item.key].description
-          delegate_to: localhost
+        - name: Count the interfaces this run added
+          ansible.builtin.set_fact:
+            nb_added: >-
+              {{ (_tmpl.json.results | default([]) | rejectattr('name', 'in', nb_ifaces.keys() | list) | list | length)
+                 + (_new_ifaces.results | default([]) | rejectattr('skipped', 'defined') | list | length) }}
 
         # ---------------- IP addresses ----------------
         - name: Reload the device's interfaces (ids for new ones)
@@ -215,6 +206,21 @@
         - name: Index them by name
           ansible.builtin.set_fact:
             nb_ifaces: "{{ dict(_ifs.json.results | map(attribute='name') | zip(_ifs.json.results)) }}"
+
+        - name: Descriptions where NetBox has none
+          netbox.netbox.netbox_device_interface:
+            data:
+              device: "{{ inventory_hostname }}"
+              name: "{{ item.key }}"
+              description: "{{ item.value.description }}"
+            state: present
+          loop: >-
+            {{ nb_reported | dict2items
+               | selectattr('key', 'in', nb_ifaces.keys() | list)
+               | selectattr('value.description', 'truthy') | list }}
+          loop_control: { label: "{{ item.key }}" }
+          when: not nb_ifaces[item.key].description
+          delegate_to: localhost
 
         # ios: ipv4 is a list of {address, subnet}; eos/nxos: one {address, masklen}
         - name: Collect the device's IPv4 addresses
@@ -319,7 +325,7 @@
               Model: {{ ansible_net_model | default('unknown') }}{{ ' - no device type with this part number in NetBox. Import it from the device-type library, then add the discover tag again.' if type_missing else '' }}
               Serial: {{ ansible_net_serialnum | default('unknown') }}
               OS version: {{ ansible_net_version | default('unknown') }}
-              Interfaces added: {{ (_tmpl.json.results | default([]) | rejectattr('name', 'in', nb_ifaces.keys() | list) | list | length) + (_new_ifaces.results | default([]) | length) }}, IPv4 addresses reported: {{ nb_ips | default([]) | length }}
+              Interfaces added: {{ nb_added }}, IPv4 addresses reported: {{ nb_ips | default([]) | length }}
 
       rescue:
         # Facts modules report "The following modules failed"; the real cause is inside
