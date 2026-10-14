@@ -91,6 +91,15 @@
               facts: {{ _facts.msg | default('host unreachable') }}
             quiet: true
 
+        # When a show command errors, the facts module can parse the error text
+        # ("% Invalid input", the prompt, the echoed command) as interface names.
+        # Keep only names that look like interfaces: Gi0/0/0.100, Loopback0, xe-0/0/1...
+        - name: Keep only real interface names
+          ansible.builtin.set_fact:
+            nb_reported: >-
+              {{ ansible_net_interfaces | default({}) | dict2items
+                 | selectattr('key', 'match', '^[A-Za-z][A-Za-z0-9_/.:-]*[0-9]$') | items2dict }}
+
         # ---------------- device ----------------
         - name: Find the device type for the reported part number
           ansible.builtin.uri:
@@ -171,7 +180,7 @@
               description: "{{ item.value.description | default(omit, true) }}"
             state: present
           loop: >-
-            {{ ansible_net_interfaces | default({}) | dict2items
+            {{ nb_reported | dict2items
                | rejectattr('key', 'in', nb_ifaces.keys() | list)
                | rejectattr('key', 'in', (_tmpl.json.results | default([])) | map(attribute='name') | list) | list }}
           loop_control: { label: "{{ item.key }}" }
@@ -186,7 +195,7 @@
               description: "{{ item.value.description }}"
             state: present
           loop: >-
-            {{ ansible_net_interfaces | default({}) | dict2items
+            {{ nb_reported | dict2items
                | selectattr('key', 'in', nb_ifaces.keys() | list)
                | selectattr('value.description', 'truthy') | list }}
           loop_control: { label: "{{ item.key }}" }
@@ -214,7 +223,7 @@
               {{ nb_ips | default([]) + (([item.value.ipv4] if item.value.ipv4 is mapping else item.value.ipv4)
                  | selectattr('address', 'defined')
                  | map('combine', {'iface': item.key}) | list) }}
-          loop: "{{ ansible_net_interfaces | default({}) | dict2items | selectattr('value.ipv4', 'defined') | list }}"
+          loop: "{{ nb_reported | dict2items | selectattr('value.ipv4', 'defined') | list }}"
           loop_control: { label: "{{ item.key }}" }
 
         - name: Look up each address in NetBox
