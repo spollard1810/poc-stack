@@ -11,3 +11,14 @@ images:
   - name: gcr.io/kubebuilder/kube-rbac-proxy
     newName: quay.io/brancz/kube-rbac-proxy
     newTag: v0.15.0
+# The awx namespace is owned by secrets/namespaces.yaml (it must exist before the
+# operator, for AWX's secrets). Drop the operator's own copy so the two apps don't
+# fight over it.
+patches:
+  - target: { kind: Namespace }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: unused

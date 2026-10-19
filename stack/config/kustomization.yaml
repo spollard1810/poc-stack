@@ -3,12 +3,13 @@
 # syncs, and re-runs the "configure" job.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: poc-config
+# No top-level "namespace:" - rbac.yaml deliberately puts one Role in secret-store.
 resources:
   - rbac.yaml
   - job.yaml
 configMapGenerator:
   - name: config-playbooks
+    namespace: poc-config
     files:
       - configure.yml
       - settings.yml

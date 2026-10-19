@@ -22,6 +22,9 @@ spec:
     - repoURL: ${STACK_REPO_URL}
       targetRevision: main
       ref: values
+  # The volume was first created by the bootstrap's Helm install, which added a Helm label
+  ignoreDifferences:
+    - { kind: PersistentVolumeClaim, jsonPointers: [/metadata/labels] }
   syncPolicy:
     automated: { prune: false, selfHeal: true }
     retry: { limit: 10, backoff: { duration: 20s, factor: 2, maxDuration: 5m } }
