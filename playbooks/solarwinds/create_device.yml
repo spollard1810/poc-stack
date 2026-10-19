@@ -31,7 +31,7 @@
           platform: "{{ nb_ref.platform[rec.platform] if rec.platform else omit }}"
           status: planned
           tags: [{ slug: discover }, { slug: from-solarwinds }]
-          custom_fields: { solarwinds_node_id: "{{ rec.node_id | int }}" }
+          custom_fields: "{{ {'solarwinds_node_id': rec.node_id | int} }}"   # a real integer, not "101"
           comments: "Imported from SolarWinds node {{ rec.node_id }} ({{ rec.caption }}). Model, serial and interfaces are filled in by AWX discovery."
         status_code: 201
       register: _dev
