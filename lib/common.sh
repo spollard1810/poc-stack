@@ -86,8 +86,8 @@ save_secret() {
 # render <template>  -> prints file with only ${VARS} that appear in it substituted
 render() {
   local f=$1 vars
-  vars=$(grep -oE '\$\{[A-Z0-9_]+\}' "$f" | sort -u | tr '\n' ' ')
-  envsubst "$vars" <"$f"
+  vars=$( { grep -oE '\$\{[A-Z0-9_]+\}' "$f" || true; } | sort -u | tr '\n' ' ')
+  if [[ -z $vars ]]; then cat "$f"; else envsubst "$vars" <"$f"; fi
 }
 
 # apply_tpl <template> : render and kubectl apply
