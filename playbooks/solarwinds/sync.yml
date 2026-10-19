@@ -111,7 +111,7 @@
           mode: "{{ 'DRY RUN - nothing written' if dry_run else 'IMPORT' }}"
           solarwinds_nodes: "{{ sw_nodes | length }}"
           create: "{{ plan.create | map(attribute='name') | list }}"
-          update: "{{ plan.update | map(attribute='name') | list }}"
+          update: "{{ plan['update'] | map(attribute='name') | list }}"
           unchanged: "{{ plan.unchanged | length }}"
           no_longer_in_solarwinds: "{{ plan.gone | map(attribute='name') | list }}"
           conflicts: "{{ plan.conflicts | map(attribute='name') | zip(plan.conflicts | map(attribute='conflict')) | map('join', ': ') | list }}"
@@ -123,7 +123,7 @@
           solarwinds_nodes: "{{ sw_nodes | length }}"
           created: "{{ 0 if dry_run else plan.create | length }}"
           would_create: "{{ plan.create | length }}"
-          updated: "{{ 0 if dry_run else plan.update | length }}"
+          updated: "{{ 0 if dry_run else plan['update'] | length }}"
           gone: "{{ plan.gone | length }}"
           skipped: "{{ plan.skipped | length }}"
           conflicts: "{{ plan.conflicts | length }}"
@@ -164,7 +164,7 @@
                  | combine({'platform': nb_ref.platform[item.changes.platform]} if item.changes.platform is defined else {})
                  | combine({'tags': item.changes.tags | map('regex_replace', '^(.*)$', '{"slug": "\1"}') | map('from_json') | list}
                            if item.changes.tags is defined else {}) }}
-          loop: "{{ plan.update }}"
+          loop: "{{ plan['update'] }}"
           loop_control: { label: "{{ item.name }}" }
           no_log: true
 
