@@ -59,7 +59,7 @@ awx:
           - { id: NETBOX_API, label: NetBox URL, type: string }
           - { id: NETBOX_TOKEN, label: NetBox API token, type: string, secret: true }
         required: [NETBOX_API, NETBOX_TOKEN]
-      injectors: { env: { NETBOX_API: "{{ '{{' }} NETBOX_API {{ '}}' }}", NETBOX_TOKEN: "{{ '{{' }} NETBOX_TOKEN {{ '}}' }}" } }
+      injectors: { env: { NETBOX_API: !unsafe "{{ NETBOX_API }}", NETBOX_TOKEN: !unsafe "{{ NETBOX_TOKEN }}" } }
     - name: SolarWinds SWIS
       description: "SolarWinds Platform API (SWIS) - read-only account"
       inputs:
@@ -69,7 +69,7 @@ awx:
           - { id: SW_PASSWORD, label: Password, type: string, secret: true }
           - { id: SW_VERIFY_SSL, label: "Verify TLS certificate (true/false)", type: string }
         required: []         # empty until you set them (./bootstrap.sh secret solarwinds_url ...)
-      injectors: { env: { SW_URL: "{{ '{{' }} SW_URL {{ '}}' }}", SW_USERNAME: "{{ '{{' }} SW_USERNAME {{ '}}' }}", SW_PASSWORD: "{{ '{{' }} SW_PASSWORD {{ '}}' }}", SW_VERIFY_SSL: "{{ '{{' }} SW_VERIFY_SSL {{ '}}' }}" } }
+      injectors: { env: { SW_URL: !unsafe "{{ SW_URL }}", SW_USERNAME: !unsafe "{{ SW_USERNAME }}", SW_PASSWORD: !unsafe "{{ SW_PASSWORD }}", SW_VERIFY_SSL: !unsafe "{{ SW_VERIFY_SSL }}" } }
     - name: Git push
       description: "Push access to one Git repo (config backups)"
       inputs:
@@ -78,7 +78,7 @@ awx:
           - { id: GIT_USERNAME, label: Username, type: string }
           - { id: GIT_TOKEN, label: Token, type: string, secret: true }
         required: [GIT_REPO_URL, GIT_USERNAME, GIT_TOKEN]
-      injectors: { env: { GIT_REPO_URL: "{{ '{{' }} GIT_REPO_URL {{ '}}' }}", GIT_USERNAME: "{{ '{{' }} GIT_USERNAME {{ '}}' }}", GIT_TOKEN: "{{ '{{' }} GIT_TOKEN {{ '}}' }}" } }
+      injectors: { env: { GIT_REPO_URL: !unsafe "{{ GIT_REPO_URL }}", GIT_USERNAME: !unsafe "{{ GIT_USERNAME }}", GIT_TOKEN: !unsafe "{{ GIT_TOKEN }}" } }
 
   # inputs: values starting with "env:" are read from the secret store
   credentials:
@@ -108,7 +108,7 @@ awx:
       source: { name: netbox, path: inventory/netbox.yml, credential: NetBox }
     - name: Local
       description: "localhost only - for jobs that only talk to APIs"
-      hosts: [ { name: localhost, variables: { ansible_connection: local, ansible_python_interpreter: "{{ '{{' }} ansible_playbook_python {{ '}}' }}" } } ]
+      hosts: [ { name: localhost, variables: { ansible_connection: local, ansible_python_interpreter: !unsafe "{{ ansible_playbook_python }}" } } ]
 
   # Every job runs as its own pod ("ansible worker") in the awx namespace
   container_group:
