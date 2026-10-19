@@ -8,7 +8,7 @@
 #    External Secrets, PostgreSQL, Valkey, NetBox, AWX (+ workers), and the
 #    settings inside AWX / NetBox / Gitea (stack/config/settings.yml).
 #
-#  Usage: ./bootstrap.sh [all|preflight|status|info|recover]
+#  Usage: ./bootstrap.sh [all|preflight|status|info|publish|recover]
 #         ./bootstrap.sh secret <name> <value>    e.g. secret device_ro_username netops
 # =============================================================================
 set -euo pipefail
@@ -259,10 +259,12 @@ main() {
       ensure_secrets; preflight; argocd_hash; store_sync; foundation_secrets
       seed_gitea_argocd force; ok "Gitea and Argo CD restored from the local copy" ;;
     secret)    ensure_secrets; set_secret "${2:-}" "${3-}" ;;
+    publish)   # push this checkout's stack/ and playbooks/ to Gitea (files changed in Gitea are kept)
+      ensure_secrets; publish_repos ;;
     preflight) ensure_secrets; preflight ;;
     status)    status ;;
     info)      info ;;
-    *) echo "usage: $0 [all|preflight|status|info|recover] | secret <name> <value>"; exit 1 ;;
+    *) echo "usage: $0 [all|preflight|status|info|publish|recover] | secret <name> <value>"; exit 1 ;;
   esac
 }
 main "$@"
