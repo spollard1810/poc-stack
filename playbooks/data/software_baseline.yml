@@ -1,0 +1,7 @@
+# Minimum OS version per NetBox platform (slug), used by "Software - Version report".
+# Agree these with the network team; anything older is reported as BELOW baseline.
+baseline:
+  cisco-ios: "17.9.4"
+  cisco-nxos: "10.2(6)"
+  arista-eos: "4.30.0F"
+  juniper-junos: "22.4R3"

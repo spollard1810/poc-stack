@@ -1,0 +1,18 @@
+# The root "app of apps": Argo CD deploys every Application in apps/, in sync-wave order.
+# bootstrap.sh applies this once. After that, change anything by committing to this repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: stack
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  source:
+    repoURL: ${STACK_REPO_URL}
+    targetRevision: main
+    path: apps
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }

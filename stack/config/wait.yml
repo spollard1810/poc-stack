@@ -1,0 +1,27 @@
+---
+# The configure job may start before AWX has finished its first start (~10 min).
+- name: Gitea is up
+  ansible.builtin.uri: { url: "{{ gitea_url }}/api/healthz" }
+  register: _r
+  until: _r.status == 200
+  retries: 90
+  delay: 10
+
+- name: NetBox is up
+  ansible.builtin.uri: { url: "{{ netbox_url }}/login/" }
+  register: _r
+  until: _r.status == 200
+  retries: 120
+  delay: 10
+
+- name: AWX accepts the admin login
+  ansible.builtin.uri:
+    url: "{{ awx_url }}/api/v2/me/"
+    user: "{{ admin_user }}"
+    password: "{{ admin_password }}"
+    force_basic_auth: true
+  register: _r
+  until: _r.status == 200
+  retries: 180
+  delay: 10
+  no_log: true

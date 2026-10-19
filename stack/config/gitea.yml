@@ -1,0 +1,167 @@
+---
+# Gitea: extra repos, restricted service users, their teams and API tokens.
+- name: "Gitea: repos"
+  ansible.builtin.uri:
+    url: "{{ gitea_url }}/api/v1/orgs/{{ gitea.org }}/repos"
+    method: POST
+    user: "{{ admin_user }}"
+    password: "{{ admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: { name: "{{ item.name }}", description: "{{ item.description }}", private: true, auto_init: "{{ item.auto_init | default(false) }}", default_branch: main }
+    status_code: [201, 409]
+  loop: "{{ gitea.repos }}"
+  loop_control: { label: "{{ item.name }}" }
+  no_log: true
+
+- name: "Gitea: service users (restricted - see only their team's repos)"
+  ansible.builtin.uri:
+    url: "{{ gitea_url }}/api/v1/admin/users"
+    method: POST
+    user: "{{ admin_user }}"
+    password: "{{ admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      username: "{{ item.username }}"
+      email: "{{ item.username }}@poc.local"
+      password: "{{ lookup('ansible.builtin.env', item.password_env) }}"
+      must_change_password: false
+      restricted: true
+    status_code: [201, 422]          # 422 = already exists
+  loop: "{{ gitea.service_users }}"
+  loop_control: { label: "{{ item.username }}" }
+  no_log: true
+
+- name: "Gitea: find teams"
+  ansible.builtin.uri:
+    url: "{{ gitea_url }}/api/v1/orgs/{{ gitea.org }}/teams/search?q={{ item.team.name }}"
+    user: "{{ admin_user }}"
+    password: "{{ admin_password }}"
+    force_basic_auth: true
+  loop: "{{ gitea.service_users }}"
+  loop_control: { label: "{{ item.team.name }}" }
+  register: _teams
+  no_log: true
+
+- name: "Gitea: create missing teams"
+  ansible.builtin.uri:
+    url: "{{ gitea_url }}/api/v1/orgs/{{ gitea.org }}/teams"
+    method: POST
+    user: "{{ admin_user }}"
+    password: "{{ admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: { name: "{{ item.item.team.name }}", permission: "{{ item.item.team.permission }}", units: [repo.code], includes_all_repositories: false }
+    status_code: 201
+  loop: "{{ _teams.results }}"
+  loop_control: { label: "{{ item.item.team.name }}" }
+  when: item.json.data | selectattr('name', 'equalto', item.item.team.name) | list | length == 0
+  no_log: true
+
+- name: "Gitea: find teams again (ids)"
+  ansible.builtin.uri:
+    url: "{{ gitea_url }}/api/v1/orgs/{{ gitea.org }}/teams/search?q={{ item.team.name }}"
+    user: "{{ admin_user }}"
+    password: "{{ admin_password }}"
+    force_basic_auth: true
+  loop: "{{ gitea.service_users }}"
+  loop_control: { label: "{{ item.team.name }}" }
+  register: _teams
+  no_log: true
+
+- name: "Gitea: team ids and (team, repo) pairs"
+  ansible.builtin.set_fact:
+    gitea_team_ids: >-
+      {{ gitea_team_ids | default({}) | combine({item.item.team.name:
+         (item.json.data | selectattr('name', 'equalto', item.item.team.name) | first).id}) }}
+    gitea_team_repos: >-
+      {%- set out = [] -%}
+      {%- for u in gitea.service_users -%}{%- for r in u.team.repos -%}
+      {%- set _ = out.append({'team': u.team.name, 'repo': r}) -%}
+      {%- endfor -%}{%- endfor -%}
+      {{ out }}
+  loop: "{{ _teams.results }}"
+  loop_control: { label: "{{ item.item.team.name }}" }
+
+- name: "Gitea: add each service user to its team"
+  ansible.builtin.uri:
+    url: "{{ gitea_url }}/api/v1/teams/{{ (item.json.data | selectattr('name', 'equalto', item.item.team.name) | first).id }}/members/{{ item.item.username }}"
+    method: PUT
+    user: "{{ admin_user }}"
+    password: "{{ admin_password }}"
+    force_basic_auth: true
+    status_code: 204
+  loop: "{{ _teams.results }}"
+  loop_control: { label: "{{ item.item.username }} -> {{ item.item.team.name }}" }
+  no_log: true
+
+- name: "Gitea: give each team its repos"
+  ansible.builtin.uri:
+    url: "{{ gitea_url }}/api/v1/teams/{{ gitea_team_ids[item.team] }}/repos/{{ gitea.org }}/{{ item.repo }}"
+    method: PUT
+    user: "{{ admin_user }}"
+    password: "{{ admin_password }}"
+    force_basic_auth: true
+    status_code: 204
+  loop: "{{ gitea_team_repos }}"
+  loop_control: { label: "{{ item.team }} -> {{ item.repo }}" }
+  no_log: true
+
+# Tokens: keep the stored one while it works; otherwise issue a new one and store it
+- name: "Gitea: check stored tokens"
+  ansible.builtin.uri:
+    url: "{{ gitea_url }}/api/v1/repos/{{ item.token.check_repo }}"
+    headers: { Authorization: "token {{ lookup('ansible.builtin.env', item.token.store_key) }}" }
+    status_code: [200, 401, 403, 404]
+  loop: "{{ gitea.service_users }}"
+  loop_control: { label: "{{ item.username }}" }
+  register: _token_check
+  no_log: true
+
+- name: "Gitea: remove the old token where the stored one no longer works"
+  ansible.builtin.uri:
+    url: "{{ gitea_url }}/api/v1/users/{{ item.item.username }}/tokens/{{ item.item.token.name }}"
+    method: DELETE
+    user: "{{ item.item.username }}"
+    password: "{{ lookup('ansible.builtin.env', item.item.password_env) }}"
+    force_basic_auth: true
+    status_code: [204, 404]
+  loop: "{{ _token_check.results }}"
+  loop_control: { label: "{{ item.item.username }}" }
+  when: item.status != 200
+  no_log: true
+
+- name: "Gitea: issue new tokens"
+  ansible.builtin.uri:
+    url: "{{ gitea_url }}/api/v1/users/{{ item.item.username }}/tokens"
+    method: POST
+    user: "{{ item.item.username }}"
+    password: "{{ lookup('ansible.builtin.env', item.item.password_env) }}"
+    force_basic_auth: true
+    body_format: json
+    body: { name: "{{ item.item.token.name }}", scopes: "{{ item.item.token.scopes }}" }
+    status_code: 201
+  loop: "{{ _token_check.results }}"
+  loop_control: { label: "{{ item.item.username }}" }
+  when: item.status != 200
+  register: _new_tokens
+  no_log: true
+
+- name: "Gitea: save new tokens"
+  ansible.builtin.include_tasks: store.yml
+  vars:
+    store_key: "{{ item.item.item.token.store_key }}"
+    store_value: "{{ item.json.sha1 }}"
+  loop: "{{ _new_tokens.results | rejectattr('skipped', 'defined') | list }}"
+  loop_control: { label: "{{ item.item.item.username }}" }
+
+- name: "Gitea: current tokens for the rest of this run"
+  ansible.builtin.set_fact:
+    gitea_tokens: >-
+      {{ gitea_tokens | default({}) | combine({item.item.token.store_key:
+         (_new_tokens.results | selectattr('item.item.username', 'equalto', item.item.username) | first).json.sha1
+         if item.status != 200 else lookup('ansible.builtin.env', item.item.token.store_key)}) }}
+  loop: "{{ _token_check.results }}"
+  loop_control: { label: "{{ item.item.username }}" }
+  no_log: true

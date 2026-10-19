@@ -1,0 +1,31 @@
+---
+# [read-only] LLDP/CDP neighbors per device (for cabling checks).
+- name: Topology - Neighbors
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Skip devices NetBox can't tell us how to reach
+      ansible.builtin.meta: end_host
+      when: ansible_network_os is not defined or primary_ip4 is not defined
+
+    - name: Read neighbors from the device
+      ansible.builtin.gather_facts:
+        gather_subset: [min, interfaces]
+      ignore_unreachable: true
+      ignore_errors: true
+
+    - name: Neighbor lines
+      ansible.builtin.set_fact:
+        neighbor_lines: >-
+          {%- set out = [] -%}
+          {%- for intf, peers in (ansible_net_neighbors | default({})).items() -%}
+            {%- for p in peers -%}
+              {%- set _ = out.append(inventory_hostname ~ ' ' ~ intf ~ ' -> ' ~ p.host | default('?') ~ ' ' ~ p.port | default('?')) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out if ansible_net_hostname is defined else [inventory_hostname ~ ': could not read the device'] }}
+
+    - name: Neighbors (device interface -> neighbor port)
+      ansible.builtin.debug:
+        msg: "{{ ansible_play_hosts | sort | map('extract', hostvars, 'neighbor_lines') | flatten }}"
+      run_once: true

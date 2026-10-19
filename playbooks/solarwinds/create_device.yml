@@ -1,0 +1,91 @@
+---
+# Create one device from a normalized SolarWinds record (rec), the same way
+# "Add devices for discovery" does: placeholder type + mgmt interface + IP,
+# tagged "discover" so the discovery job fills in the rest.
+- name: "{{ rec.name }}: is the management IP already in NetBox?"
+  ansible.builtin.uri:
+    url: "{{ nb_url }}/api/ipam/ip-addresses/?address={{ rec.ip | urlencode }}"
+    headers: { Authorization: "{{ nb_auth }}" }
+  register: _ip
+  no_log: true
+
+- name: "{{ rec.name }}: skip - its IP belongs to another device"
+  ansible.builtin.debug:
+    msg: "{{ rec.ip }} is already assigned to {{ _ip.json.results[0].assigned_object.device.name | default('another object') }} - not imported"
+  when: _ip.json.count > 0 and _ip.json.results[0].assigned_object is not none
+
+- name: "{{ rec.name }}: create"
+  when: _ip.json.count == 0 or _ip.json.results[0].assigned_object is none
+  block:
+    - name: "{{ rec.name }}: device"
+      ansible.builtin.uri:
+        url: "{{ nb_url }}/api/dcim/devices/"
+        method: POST
+        headers: { Authorization: "{{ nb_auth }}" }
+        body_format: json
+        body:
+          name: "{{ rec.name }}"
+          site: "{{ nb_ref.site[rec.site] | default(nb_ref.site['unassigned']) }}"
+          role: "{{ nb_ref.role[rec.role] | default(nb_ref.role['unassigned']) }}"
+          device_type: "{{ nb_ref.device_type[rec.manufacturer ~ '-pending-discovery'] }}"
+          platform: "{{ nb_ref.platform[rec.platform] if rec.platform else omit }}"
+          status: planned
+          tags: [{ slug: discover }, { slug: from-solarwinds }]
+          custom_fields: { solarwinds_node_id: "{{ rec.node_id | int }}" }
+          comments: "Imported from SolarWinds node {{ rec.node_id }} ({{ rec.caption }}). Model, serial and interfaces are filled in by AWX discovery."
+        status_code: 201
+      register: _dev
+      no_log: true
+
+    - name: "{{ rec.name }}: placeholder management interface"
+      ansible.builtin.uri:
+        url: "{{ nb_url }}/api/dcim/interfaces/"
+        method: POST
+        headers: { Authorization: "{{ nb_auth }}" }
+        body_format: json
+        body: { device: "{{ _dev.json.id }}", name: mgmt0, type: virtual, mgmt_only: true }
+        status_code: 201
+      register: _if
+      no_log: true
+
+    - name: "{{ rec.name }}: management IP"
+      ansible.builtin.uri:
+        url: "{{ nb_url }}/api/ipam/ip-addresses/{{ (_ip.json.results[0].id ~ '/') if _ip.json.count else '' }}"
+        method: "{{ 'PATCH' if _ip.json.count else 'POST' }}"
+        headers: { Authorization: "{{ nb_auth }}" }
+        body_format: json
+        body:
+          address: "{{ rec.ip }}/{{ 128 if ':' in rec.ip else 32 }}"
+          status: active
+          assigned_object_type: dcim.interface
+          assigned_object_id: "{{ _if.json.id }}"
+        status_code: [200, 201]
+      register: _newip
+      no_log: true
+
+    - name: "{{ rec.name }}: primary IP"
+      ansible.builtin.uri:
+        url: "{{ nb_url }}/api/dcim/devices/{{ _dev.json.id }}/"
+        method: PATCH
+        headers: { Authorization: "{{ nb_auth }}" }
+        body_format: json
+        body: "{{ {('primary_ip6' if ':' in rec.ip else 'primary_ip4'): _newip.json.id} }}"
+      no_log: true
+
+    - name: "{{ rec.name }}: journal entry"
+      ansible.builtin.uri:
+        url: "{{ nb_url }}/api/extras/journal-entries/"
+        method: POST
+        headers: { Authorization: "{{ nb_auth }}" }
+        body_format: json
+        body:
+          assigned_object_type: dcim.device
+          assigned_object_id: "{{ _dev.json.id }}"
+          kind: info
+          comments: |-
+            Imported from SolarWinds by {{ run_ref }}.
+            SolarWinds node {{ rec.node_id }}: {{ rec.caption }} ({{ rec.ip }})
+            Vendor / model: {{ rec.vendor }} / {{ rec.model | default('?', true) }}, OS: {{ rec.os_version | default('?', true) }}
+            Location: {{ rec.location | default('-', true) }} -> site {{ rec.site }}, role {{ rec.role }}
+        status_code: 201
+      no_log: true

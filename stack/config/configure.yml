@@ -1,0 +1,31 @@
+---
+# Applies settings.yml to Gitea, NetBox and AWX. Run by the "configure" job after
+# every sync of the config app. Safe to run any number of times.
+- name: Configure Gitea, NetBox and AWX
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [settings.yml]
+  vars:
+    admin_user: "{{ lookup('ansible.builtin.env', 'admin_user') }}"
+    admin_password: "{{ lookup('ansible.builtin.env', 'admin_password') }}"
+    # Values written "env:<key>" in settings.yml come from the secret store
+    k8s_api: https://kubernetes.default.svc
+    k8s_sa: /var/run/secrets/kubernetes.io/serviceaccount
+  module_defaults:
+    group/awx.awx.controller:
+      controller_host: "{{ awx_url }}"
+      controller_username: "{{ admin_user }}"
+      controller_password: "{{ admin_password }}"
+      validate_certs: false
+  tasks:
+    - name: Wait for the apps
+      ansible.builtin.import_tasks: wait.yml
+    - name: Gitea
+      ansible.builtin.import_tasks: gitea.yml
+    - name: NetBox
+      ansible.builtin.import_tasks: netbox.yml
+    - name: AWX
+      ansible.builtin.import_tasks: awx.yml
+    - name: NetBox -> AWX events
+      ansible.builtin.import_tasks: events.yml

@@ -1,0 +1,53 @@
+---
+# NetBox -> AWX: launch "NetBox - Discover devices" once when the "Add devices for
+# discovery" script finishes, or when a device gets the "discover" tag.
+- name: "Events: webhook body"
+  ansible.builtin.set_fact:
+    _webhook:
+      name: AWX - launch discovery
+      description: Launches the AWX job template "NetBox - Discover devices"
+      payload_url: "{{ awx_url }}/api/v2/job_templates/{{ awx_jt_ids['NetBox - Discover devices'] }}/launch/"
+      http_method: POST
+      http_content_type: application/json
+      additional_headers: "Authorization: Bearer {{ awx_events_token }}"
+      body_template: "{}"
+      ssl_verification: false
+      timeout: 15
+  no_log: true
+
+- name: "Events: find the webhook"
+  ansible.builtin.uri:
+    url: "{{ netbox_url }}/api/extras/webhooks/?name={{ _webhook.name | urlencode }}"
+    headers: { Authorization: "{{ nb_auth }}" }
+  register: _wh
+  no_log: true
+
+- name: "Events: create or update the webhook"
+  ansible.builtin.uri:
+    url: "{{ netbox_url }}/api/extras/webhooks/{{ (_wh.json.results[0].id ~ '/') if _wh.json.count else '' }}"
+    method: "{{ 'PATCH' if _wh.json.count else 'POST' }}"
+    headers: { Authorization: "{{ nb_auth }}" }
+    body_format: json
+    body: "{{ _webhook }}"
+    status_code: [200, 201]
+  register: _wh_saved
+  no_log: true
+
+- name: "Events: event rules"
+  ansible.builtin.include_tasks: nb_ensure.yml
+  vars:
+    nb_key: "rule_{{ item.name }}"
+    nb_endpoint: extras/event-rules
+    nb_query: "name={{ item.name | urlencode }}"
+    nb_body: "{{ item | combine({'action_type': 'webhook', 'action_object_type': 'extras.webhook', 'action_object_id': _wh_saved.json.id, 'enabled': true}) }}"
+  loop:
+    - name: "Discovery: after Add devices script"
+      description: One AWX run per script run, however many devices were added
+      object_types: [extras.script]
+      event_types: [job_completed]
+    - name: "Discovery: device tagged discover"
+      description: Re-run discovery for a device by adding the discover tag
+      object_types: [dcim.device]
+      event_types: [object_updated]
+      conditions: { and: [ { attr: tags.slug, op: contains, value: discover } ] }
+  loop_control: { label: "{{ item.name }}" }

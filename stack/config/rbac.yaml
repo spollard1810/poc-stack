@@ -1,0 +1,27 @@
+# The configure job may update exactly one secret: secret-store/poc-secrets, to save
+# the API tokens it issues (NetBox, AWX, Gitea). Nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: configure
+  namespace: poc-config
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: configure-save-tokens
+  namespace: secret-store
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [poc-secrets]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: configure-save-tokens
+  namespace: secret-store
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: configure-save-tokens }
+subjects:
+  - { kind: ServiceAccount, name: configure, namespace: poc-config }

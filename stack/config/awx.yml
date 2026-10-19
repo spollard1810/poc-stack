@@ -1,0 +1,220 @@
+---
+# AWX objects with the official awx.awx modules (create or update, never delete).
+
+# "env:<key>" in settings.yml -> value from the secret store; tokens issued earlier in
+# this run win over the (possibly older) values in the environment.
+- name: "AWX: secret values for this run"
+  ansible.builtin.set_fact:
+    store_values: >-
+      {{ {'netbox_api_token': netbox_api_token} | combine(gitea_tokens | default({})) }}
+  no_log: true
+
+- name: "AWX: organization"
+  awx.awx.organization:
+    name: "{{ awx.organization }}"
+    description: PoC organization (managed from Git)
+    galaxy_credentials: [Ansible Galaxy]   # without it AWX skips collections/requirements.yml
+
+- name: "AWX: credential types"
+  awx.awx.credential_type:
+    name: "{{ item.name }}"
+    description: "{{ item.description }}"
+    kind: cloud
+    inputs: "{{ item.inputs }}"
+    injectors: "{{ item.injectors }}"
+  loop: "{{ awx.credential_types }}"
+  loop_control: { label: "{{ item.name }}" }
+
+- name: "AWX: credentials"
+  awx.awx.credential:
+    name: "{{ item.name }}"
+    description: "{{ item.description | default(omit) }}"
+    organization: "{{ awx.organization }}"
+    credential_type: "{{ item.type }}"
+    inputs: >-
+      {%- set out = {} -%}
+      {%- for k, v in item.inputs.items() -%}
+        {%- if v is string and v.startswith('env:') -%}
+          {%- set key = v[4:] -%}
+          {%- set _ = out.update({k: store_values[key] if key in store_values else lookup('ansible.builtin.env', key)}) -%}
+        {%- else -%}
+          {%- set _ = out.update({k: v}) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+  loop: "{{ awx.credentials }}"
+  loop_control: { label: "{{ item.name }}" }
+  no_log: true
+
+- name: "AWX: project (Git repo with the playbooks)"
+  awx.awx.project:
+    name: "{{ awx.project.name }}"
+    organization: "{{ awx.organization }}"
+    scm_type: git
+    scm_url: "{{ gitea_url }}/{{ awx.project.repo }}.git"
+    scm_branch: "{{ awx.project.branch }}"
+    credential: "{{ awx.project.credential }}"
+    scm_update_on_launch: true
+    scm_update_cache_timeout: 0
+    wait: true
+
+- name: "AWX: inventories"
+  awx.awx.inventory:
+    name: "{{ item.name }}"
+    description: "{{ item.description }}"
+    organization: "{{ awx.organization }}"
+  loop: "{{ awx.inventories }}"
+  loop_control: { label: "{{ item.name }}" }
+
+- name: "AWX: inventory sources"
+  awx.awx.inventory_source:
+    name: "{{ item.source.name }}"
+    inventory: "{{ item.name }}"
+    organization: "{{ awx.organization }}"
+    source: scm
+    source_project: "{{ awx.project.name }}"
+    source_path: "{{ item.source.path }}"
+    credential: "{{ item.source.credential }}"
+    overwrite: true
+    overwrite_vars: true
+    update_on_launch: true
+  loop: "{{ awx.inventories | selectattr('source', 'defined') | list }}"
+  loop_control: { label: "{{ item.name }}" }
+
+- name: "AWX: static hosts"
+  awx.awx.host:
+    name: "{{ item.1.name }}"
+    inventory: "{{ item.0.name }}"
+    variables: "{{ item.1.variables }}"
+  loop: "{{ awx.inventories | selectattr('hosts', 'defined') | subelements('hosts') }}"
+  loop_control: { label: "{{ item.0.name }}/{{ item.1.name }}" }
+
+- name: "AWX: container group for job pods (ansible workers)"
+  awx.awx.instance_group:
+    name: "{{ awx.container_group.name }}"
+    is_container_group: true
+    pod_spec_override: "{{ awx.container_group.pod_spec }}"
+    max_concurrent_jobs: "{{ awx.container_group.max_concurrent_jobs }}"
+
+- name: "AWX: job templates"
+  awx.awx.job_template:
+    name: "{{ item.name }}"
+    description: "{{ item.description }}"
+    organization: "{{ awx.organization }}"
+    project: "{{ awx.project.name }}"
+    playbook: "{{ item.playbook }}"
+    inventory: "{{ item.inventory }}"
+    job_type: run
+    credentials: "{{ item.credentials }}"
+    instance_groups: ["{{ awx.container_group.name }}"]
+    allow_simultaneous: "{{ item.allow_simultaneous | default(false) }}"
+    ask_limit_on_launch: "{{ item.ask_limit_on_launch | default(false) }}"
+    extra_vars: "{{ item.extra_vars | default({}) }}"
+    survey_enabled: "{{ item.survey is defined }}"
+    survey_spec: "{{ item.survey | default(omit) }}"
+  loop: "{{ awx.job_templates }}"
+  loop_control: { label: "{{ item.name }}" }
+  register: _jts
+
+- name: "AWX: remember job template ids"
+  ansible.builtin.set_fact:
+    awx_jt_ids: "{{ awx_jt_ids | default({}) | combine({item.item.name: item.id}) }}"
+  loop: "{{ _jts.results }}"
+  loop_control: { label: "{{ item.item.name }}" }
+
+- name: "AWX: workflows"
+  awx.awx.workflow_job_template:
+    name: "{{ item.name }}"
+    description: "{{ item.description }}"
+    organization: "{{ awx.organization }}"
+    workflow_nodes: >-
+      {%- set nodes = [] -%}
+      {%- for step in item.steps -%}
+        {%- set node = {'identifier': 'step' ~ loop.index,
+                        'unified_job_template': {'name': step, 'type': 'job_template', 'organization': {'name': awx.organization}}} -%}
+        {%- if not loop.last -%}
+          {%- set _ = node.update({'related': {'success_nodes': [{'identifier': 'step' ~ (loop.index + 1)}]}}) -%}
+        {%- endif -%}
+        {%- set _ = nodes.append(node) -%}
+      {%- endfor -%}
+      {{ nodes }}
+  loop: "{{ awx.workflows }}"
+  loop_control: { label: "{{ item.name }}" }
+
+- name: "AWX: schedules"
+  awx.awx.schedule:
+    name: "{{ item.name }}"
+    unified_job_template: "{{ item.template }}"
+    rrule: "{{ item.rrule }}"
+    enabled: "{{ (lookup('ansible.builtin.env', item.enabled_if_env) | length > 0) if item.enabled_if_env is defined else true }}"
+  loop: "{{ awx.schedules }}"
+  loop_control: { label: "{{ item.name }}" }
+
+# ---------------- the user NetBox launches discovery as ------------------------
+- name: "AWX: {{ awx.events_user.username }} user"
+  awx.awx.user:
+    username: "{{ awx.events_user.username }}"
+    password: "{{ lookup('ansible.builtin.env', awx.events_user.password_env) }}"
+    first_name: NetBox
+    last_name: event rules
+    update_secrets: false
+  no_log: true
+
+- name: "AWX: {{ awx.events_user.username }} may only execute '{{ awx.events_user.may_execute }}'"
+  awx.awx.role:
+    user: "{{ awx.events_user.username }}"
+    role: execute
+    job_templates: ["{{ awx.events_user.may_execute }}"]
+
+- name: "AWX: stored events token"
+  ansible.builtin.set_fact:
+    awx_events_token: "{{ lookup('ansible.builtin.env', awx.events_user.token_store_key) }}"
+  no_log: true
+
+- name: "AWX: does the stored events token still work?"
+  ansible.builtin.uri:
+    url: "{{ awx_url }}/api/v2/me/"
+    headers: { Authorization: "Bearer {{ awx_events_token }}" }
+    status_code: [200, 401]
+  register: _ev_check
+  when: awx_events_token | length > 0
+  no_log: true
+
+- name: "AWX: issue a new events token"
+  when: awx_events_token | length == 0 or _ev_check.status | default(0) != 200
+  block:
+    - name: "AWX: new token"
+      ansible.builtin.uri:
+        url: "{{ awx_url }}/api/v2/tokens/"
+        method: POST
+        user: "{{ awx.events_user.username }}"
+        password: "{{ lookup('ansible.builtin.env', awx.events_user.password_env) }}"
+        force_basic_auth: true
+        body_format: json
+        body: { description: "NetBox event rules - launch discovery", scope: write }
+        status_code: 201
+      register: _ev_new
+      no_log: true
+    - name: "AWX: use the new token"
+      ansible.builtin.set_fact:
+        awx_events_token: "{{ _ev_new.json.token }}"
+      no_log: true
+    - name: "AWX: save the new token"
+      ansible.builtin.include_tasks: store.yml
+      vars: { store_key: "{{ awx.events_user.token_store_key }}", store_value: "{{ awx_events_token }}" }
+
+# ---------------- first inventory sync + smoke test ------------------------------
+- name: "AWX: sync the NetBox inventory"
+  awx.awx.inventory_source_update:
+    name: netbox
+    inventory: NetBox
+    organization: "{{ awx.organization }}"
+    wait: true
+    timeout: 900
+  ignore_errors: true   # an empty NetBox or a temporary error must not block the rest
+
+- name: "AWX: smoke test ({{ awx.smoke_test }})"
+  awx.awx.job_launch:
+    job_template: "{{ awx.smoke_test }}"
+    wait: true
+    timeout: 900

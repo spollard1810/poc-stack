@@ -1,0 +1,69 @@
+---
+# [read-only on devices] Read each device's running config and commit it to the
+# Gitea repo infra/config-backups (<site>/<device>.cfg). Git gives history and diffs.
+# Note: configs contain password hashes - the repo is private and only AWX's
+# backup account (and admins) can read it.
+- name: Config - Read running configs
+  hosts: all
+  gather_facts: false
+  vars:
+    config_command:
+      cisco.ios.ios: show running-config
+      cisco.nxos.nxos: show running-config
+      arista.eos.eos: show running-config
+      junipernetworks.junos.junos: show configuration | display set
+  tasks:
+    - name: Skip devices NetBox can't tell us how to reach
+      ansible.builtin.meta: end_host
+      when: ansible_network_os is not defined or primary_ip4 is not defined
+
+    - name: Read the running config
+      ansible.netcommon.cli_command:
+        command: "{{ config_command[ansible_network_os] }}"
+      register: running_config
+      ignore_errors: true
+      ignore_unreachable: true
+
+- name: Config - Commit to Git
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    repo_url: "{{ lookup('ansible.builtin.env', 'GIT_REPO_URL') }}"
+    git_auth: "Authorization: Basic {{ (lookup('ansible.builtin.env', 'GIT_USERNAME') ~ ':' ~ lookup('ansible.builtin.env', 'GIT_TOKEN')) | b64encode }}"
+    work: /tmp/config-backups
+    backed_up: >-
+      {{ groups['all'] | map('extract', hostvars) | selectattr('running_config', 'defined')
+         | selectattr('running_config.stdout', 'defined') | list }}
+  tasks:
+    - name: Clone the backup repo
+      ansible.builtin.command: git -c http.extraHeader="{{ git_auth }}" clone -q "{{ repo_url }}" "{{ work }}"
+      changed_when: false
+      no_log: true
+
+    - name: Write configs
+      ansible.builtin.copy:
+        dest: "{{ work }}/{{ item.sites | default(['unassigned']) | first }}/{{ item.inventory_hostname }}.cfg"
+        content: "{{ item.running_config.stdout }}\n"
+        mode: "0644"
+      loop: "{{ backed_up }}"
+      loop_control: { label: "{{ item.inventory_hostname }}" }
+
+    - name: Commit and push
+      ansible.builtin.shell: |
+        cd "{{ work }}"
+        git add -A
+        if git diff --cached --quiet; then echo "no changes"; exit 0; fi
+        git -c user.name="AWX config backup" -c user.email=awx-backup@poc.local commit -q -m "Config backup by {{ ('AWX job #' ~ awx_job_id) if awx_job_id is defined else 'ansible-playbook' }}"
+        git -c http.extraHeader="{{ git_auth }}" push -q origin HEAD
+        git log -1 --stat --format="%h %s"
+      register: _push
+      changed_when: "'no changes' not in _push.stdout"
+      no_log: true
+
+    - name: Result
+      ansible.builtin.debug:
+        msg:
+          backed_up: "{{ backed_up | map(attribute='inventory_hostname') | list }}"
+          failed: "{{ groups['all'] | difference(backed_up | map(attribute='inventory_hostname') | list) }}"
+          git: "{{ _push.stdout_lines | default([]) }}"

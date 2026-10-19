@@ -39,26 +39,33 @@ load_config() {
   PG_HOST="postgres.data.svc.cluster.local"
   VALKEY_HOST="valkey.data.svc.cluster.local"
   GITEA_INTERNAL_URL="http://gitea-http.gitea.svc.cluster.local:3000"
-  PLATFORM_REPO_URL="${GITEA_INTERNAL_URL}/infra/platform.git"
-  NETBOX_INTERNAL_URL="http://netbox.netbox.svc.cluster.local"
+  STACK_REPO_URL="${GITEA_INTERNAL_URL}/infra/stack.git"
+  AWX_VERSION="${AWX_EE_IMAGE##*:}"
 
-  export NODE_IP NETBOX_URL AWX_URL GITEA_URL ARGOCD_URL PLATFORM_REPO_URL PG_HOST VALKEY_HOST \
-         GITEA_INTERNAL_URL NETBOX_INTERNAL_URL
+  export NODE_IP NETBOX_URL AWX_URL GITEA_URL ARGOCD_URL STACK_REPO_URL PG_HOST VALKEY_HOST \
+         GITEA_INTERNAL_URL AWX_VERSION
 }
 
-# Generate random secrets once; re-runs reuse them.
+# Generate random secrets once; re-runs reuse them. .secrets.env is the local copy
+# (disaster recovery); bootstrap copies every entry into the in-cluster secret store
+# (secret-store/poc-secrets) under its lower-case name.
 rand_hex() { od -An -tx1 -N"${1:-16}" /dev/urandom | tr -d ' \n'; }
 ensure_secrets() {
-  local changed=0
+  local changed=0 k
   touch "$SECRETS_FILE"; chmod 600 "$SECRETS_FILE"
-  local k
-  for k in PG_SUPERUSER_PASSWORD NETBOX_DB_PASSWORD AWX_DB_PASSWORD GITEA_DB_PASSWORD VALKEY_PASSWORD AWX_EVENTS_PASSWORD GITEA_ARGOCD_PASSWORD; do
+  for k in PG_SUPERUSER_PASSWORD NETBOX_DB_PASSWORD AWX_DB_PASSWORD VALKEY_PASSWORD \
+           AWX_EVENTS_PASSWORD GITEA_ARGOCD_PASSWORD GITEA_AWX_PASSWORD GITEA_BACKUP_PASSWORD; do
     grep -q "^$k=" "$SECRETS_FILE" || { echo "$k=$(rand_hex 16)" >>"$SECRETS_FILE"; changed=1; }
   done
-  for k in NETBOX_SECRET_KEY NETBOX_PEPPER AWX_SECRET_KEY; do
+  for k in NETBOX_SECRET_KEY NETBOX_PEPPER AWX_SECRET_KEY ARGOCD_SERVER_SECRETKEY; do
     grep -q "^$k=" "$SECRETS_FILE" || { echo "$k=$(rand_hex 32)" >>"$SECRETS_FILE"; changed=1; }
   done
   grep -q "^NETBOX_SUPERUSER_TOKEN=" "$SECRETS_FILE" || { echo "NETBOX_SUPERUSER_TOKEN=$(rand_hex 20)" >>"$SECRETS_FILE"; changed=1; }
+  # Set later with: ./bootstrap.sh secret <name> <value>
+  for k in DEVICE_RO_USERNAME DEVICE_RO_PASSWORD DEVICE_RW_USERNAME DEVICE_RW_PASSWORD \
+           SOLARWINDS_URL SOLARWINDS_USERNAME SOLARWINDS_PASSWORD SOLARWINDS_VERIFY_SSL; do
+    grep -q "^$k=" "$SECRETS_FILE" || { echo "$k=" >>"$SECRETS_FILE"; changed=1; }
+  done
   (( changed )) && ok "generated secrets in .secrets.env"
   set -a; source "$SECRETS_FILE"; set +a
 }

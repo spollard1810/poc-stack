@@ -1,0 +1,36 @@
+# Argo CD (chart argo/argo-cd). Installed once by bootstrap.sh, then Argo CD manages
+# itself from this file (apps/argocd.yaml).
+configs:
+  params:
+    server.insecure: true            # plain HTTP like the rest of the PoC (TLS is a checklist item)
+  cm:
+    admin.enabled: false             # no built-in "admin"; log in as the PoC admin below
+    accounts.${POC_ADMIN_USER}: login
+    timeout.reconciliation: 180s
+    # Let an app-of-apps wait for each child app to be Healthy before the next sync wave
+    resource.customizations.health.argoproj.io_Application: |
+      hs = {}
+      hs.status = "Progressing"
+      hs.message = ""
+      if obj.status ~= nil and obj.status.health ~= nil then
+        hs.status = obj.status.health.status
+        if obj.status.health.message ~= nil then hs.message = obj.status.health.message end
+      end
+      return hs
+  rbac:
+    policy.default: ""               # logged-in users without a role see nothing
+    policy.csv: |
+      g, ${POC_ADMIN_USER}, role:admin
+  secret:
+    createSecret: false              # argocd-secret comes from the secret store (secrets/)
+
+server:
+  service:
+    type: NodePort
+    nodePortHttp: ${ARGOCD_PORT}
+    nodePortHttps: ${ARGOCD_HTTPS_PORT}
+
+# Not needed for the PoC (Okta SSO replaces dex later)
+dex: { enabled: false }
+notifications: { enabled: false }
+applicationSet: { enabled: false }

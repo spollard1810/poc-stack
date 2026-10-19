@@ -1,0 +1,43 @@
+# Applies settings.yml to AWX, NetBox and Gitea after every sync of the config app.
+# Its log is in Argo CD (config app -> configure job) or:
+#   kubectl -n poc-config logs job/configure
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: configure
+  namespace: poc-config
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 5400        # first install waits for AWX (~10 min)
+  template:
+    spec:
+      serviceAccountName: configure
+      restartPolicy: Never
+      containers:
+        - name: configure
+          image: ${AWX_EE_IMAGE}
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: ANSIBLE_FORCE_COLOR, value: "0" }
+            - { name: ANSIBLE_COLLECTIONS_PATH, value: /tmp/collections }
+          envFrom:
+            - secretRef: { name: config-env }      # every key of the secret store
+          command: [bash, -ec]
+          args:
+            - |
+              for i in 1 2 3; do
+                ansible-galaxy collection install -r /config/requirements.yml -p /tmp/collections && break
+                sleep 10
+              done
+              ansible-playbook /config/configure.yml
+          volumeMounts:
+            - { name: playbooks, mountPath: /config }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+      volumes:
+        - name: playbooks
+          configMap: { name: config-playbooks }

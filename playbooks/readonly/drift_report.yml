@@ -1,0 +1,49 @@
+---
+# [read-only] Compare what the device reports with what NetBox says:
+# model (part number), serial and OS version. Writes nothing anywhere.
+- name: Compliance - NetBox drift report
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Skip devices NetBox can't tell us how to reach
+      ansible.builtin.meta: end_host
+      when: ansible_network_os is not defined or primary_ip4 is not defined
+
+    - name: Read facts from the device
+      ansible.builtin.gather_facts:
+        gather_subset: [min]
+      ignore_unreachable: true
+      ignore_errors: true
+      register: _facts
+
+    - name: Differences
+      ansible.builtin.set_fact:
+        drift: >-
+          {%- set d = [] -%}
+          {%- if ansible_net_model is not defined -%}
+            {%- set _ = d.append('could not read the device') -%}
+          {%- else -%}
+            {%- if ansible_net_serialnum | default('') != serial | default('') -%}
+              {%- set _ = d.append('serial: NetBox ' ~ (serial | default('', true) or 'empty') ~ ', device ' ~ ansible_net_serialnum | default('?')) -%}
+            {%- endif -%}
+            {%- if ansible_net_version | default('') != (custom_fields | default({})).os_version | default('', true) -%}
+              {%- set _ = d.append('OS: NetBox ' ~ ((custom_fields | default({})).os_version or 'empty') ~ ', device ' ~ ansible_net_version | default('?')) -%}
+            {%- endif -%}
+            {%- if (device_types | default(['']) | first) is search('pending-discovery') -%}
+              {%- set _ = d.append('device type still Pending discovery (device reports ' ~ ansible_net_model ~ ')') -%}
+            {%- endif -%}
+          {%- endif -%}
+          {{ d }}
+
+    - name: Drift (empty = NetBox matches the device)
+      ansible.builtin.debug:
+        msg: >-
+          {{ dict(ansible_play_hosts | sort | zip(ansible_play_hosts | sort | map('extract', hostvars) | map(attribute='drift', default=['skipped: no platform or mgmt IP']))) }}
+      run_once: true
+
+    - name: Summary for AWX
+      ansible.builtin.set_stats:
+        data:
+          devices_checked: "{{ ansible_play_hosts | length }}"
+          devices_with_drift: "{{ ansible_play_hosts | map('extract', hostvars) | selectattr('drift', 'defined') | map(attribute='drift') | select | list | length }}"
+      run_once: true

@@ -1,0 +1,20 @@
+# Settings inside AWX, NetBox and Gitea (config/settings.yml), applied by a job after every sync.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: poc-config
+  source:
+    repoURL: ${STACK_REPO_URL}
+    targetRevision: main
+    path: config
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    retry: { limit: 10, backoff: { duration: 20s, factor: 2, maxDuration: 5m } }

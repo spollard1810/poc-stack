@@ -1,0 +1,37 @@
+---
+# [read-only] OS versions per platform vs. the baseline in data/software_baseline.yml.
+# Uses the OS version NetBox recorded at discovery - no device logins.
+- name: Software - Version report
+  hosts: all
+  connection: local
+  gather_facts: false
+  vars_files: [../data/software_baseline.yml]
+  tasks:
+    - name: Compare with the baseline
+      ansible.builtin.set_fact:
+        sw_platform: "{{ platforms | default(['none']) | first }}"
+        sw_version: "{{ (custom_fields | default({})).os_version | default('', true) }}"
+        sw_status: >-
+          {%- set p = platforms | default(['none']) | first -%}
+          {%- set v = (custom_fields | default({})).os_version | default('', true) -%}
+          {%- if not v -%}unknown (not discovered yet)
+          {%- elif p not in baseline -%}no baseline for {{ p }}
+          {%- elif v is version(baseline[p], '>=', strict=false) -%}OK
+          {%- else -%}BELOW baseline {{ baseline[p] }}{%- endif -%}
+
+    - name: Versions (device | platform | OS | status)
+      ansible.builtin.debug:
+        msg: >-
+          {{ ansible_play_hosts | sort | map('extract', hostvars) | map(attribute='inventory_hostname')
+             | zip(ansible_play_hosts | sort | map('extract', hostvars, 'sw_platform'),
+                   ansible_play_hosts | sort | map('extract', hostvars, 'sw_version'),
+                   ansible_play_hosts | sort | map('extract', hostvars, 'sw_status'))
+             | map('join', ' | ') | list }}
+      run_once: true
+
+    - name: Summary for AWX
+      ansible.builtin.set_stats:
+        data:
+          below_baseline: "{{ ansible_play_hosts | map('extract', hostvars, 'sw_status') | select('match', 'BELOW') | list | length }}"
+          unknown: "{{ ansible_play_hosts | map('extract', hostvars, 'sw_status') | select('match', 'unknown') | list | length }}"
+      run_once: true

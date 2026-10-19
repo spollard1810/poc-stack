@@ -1,0 +1,26 @@
+# NetBox: community Helm chart + netbox/values.yaml. Upgrade by changing targetRevision.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: netbox
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: netbox
+  sources:
+    - repoURL: https://charts.netbox.oss.netboxlabs.com/
+      chart: netbox
+      targetRevision: "${NETBOX_CHART_VERSION}"
+      helm:
+        releaseName: netbox
+        valueFiles: [ $values/netbox/values.yaml ]
+    - repoURL: ${STACK_REPO_URL}
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    retry: { limit: 10, backoff: { duration: 20s, factor: 2, maxDuration: 5m } }

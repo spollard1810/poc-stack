@@ -1,0 +1,21 @@
+# The AWX instance (awx/). Its resource type comes from the operator app.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: awx
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: awx
+  source:
+    repoURL: ${STACK_REPO_URL}
+    targetRevision: main
+    path: awx
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [SkipDryRunOnMissingResource=true]
+    retry: { limit: 10, backoff: { duration: 20s, factor: 2, maxDuration: 5m } }

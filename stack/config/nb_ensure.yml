@@ -1,0 +1,25 @@
+---
+# Create a NetBox object if it doesn't exist yet; remember its id in nb_ids[nb_key].
+# vars: nb_key, nb_endpoint (e.g. dcim/sites), nb_query (e.g. slug=x), nb_body
+- name: "NetBox: find {{ nb_key }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_url }}/api/{{ nb_endpoint }}/?{{ nb_query }}&limit=1"
+    headers: { Authorization: "{{ nb_auth }}" }
+  register: _found
+  no_log: true
+
+- name: "NetBox: create {{ nb_key }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_url }}/api/{{ nb_endpoint }}/"
+    method: POST
+    headers: { Authorization: "{{ nb_auth }}" }
+    body_format: json
+    body: "{{ nb_body }}"
+    status_code: 201
+  register: _created
+  when: _found.json.count == 0
+  no_log: true
+
+- name: "NetBox: remember {{ nb_key }}"
+  ansible.builtin.set_fact:
+    nb_ids: "{{ nb_ids | default({}) | combine({nb_key: (_created.json.id if _found.json.count == 0 else _found.json.results[0].id)}) }}"

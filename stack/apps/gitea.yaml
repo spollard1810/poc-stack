@@ -1,0 +1,27 @@
+# Gitea - the Git server this repo lives on. Argo CD keeps it in line with gitea/values.yaml
+# but never deletes its resources (prune off): a bad commit can't remove the Git server.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitea
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gitea
+  sources:
+    - repoURL: https://dl.gitea.com/charts/
+      chart: gitea
+      targetRevision: "${GITEA_CHART_VERSION}"
+      helm:
+        releaseName: gitea
+        valueFiles: [ $values/gitea/values.yaml ]
+    - repoURL: ${STACK_REPO_URL}
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated: { prune: false, selfHeal: true }
+    retry: { limit: 10, backoff: { duration: 20s, factor: 2, maxDuration: 5m } }

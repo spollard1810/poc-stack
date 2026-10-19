@@ -1,0 +1,229 @@
+# =============================================================================
+#  What should exist inside Gitea, NetBox and AWX. Edit + commit; the configure
+#  job applies it. Secret values are never here - they come from the secret
+#  store as environment variables (lookup('env', ...)).
+#  Objects are created or updated, never deleted: removing an entry here leaves
+#  the object in place (delete it in the app if you really want it gone).
+# =============================================================================
+
+# Cluster-internal addresses
+awx_url: http://awx-service.awx.svc.cluster.local
+netbox_url: http://netbox.netbox.svc.cluster.local
+gitea_url: http://gitea-http.gitea.svc.cluster.local:3000
+
+# ---------------------------------------------------------------- Gitea -----
+gitea:
+  org: infra
+  repos:                     # created if missing (the bootstrap creates stack + playbooks)
+    - { name: config-backups, description: "Device running configs, committed by AWX nightly", auto_init: true }
+  service_users:             # restricted users: see only the repos their team grants
+    - username: awx
+      password_env: gitea_awx_password
+      team: { name: playbooks-readers, permission: read, repos: [playbooks] }
+      token: { name: awx-read, scopes: [read:repository], store_key: gitea_awx_token, check_repo: infra/playbooks }
+    - username: awx-backup
+      password_env: gitea_backup_password
+      team: { name: backup-writers, permission: write, repos: [config-backups] }
+      token: { name: awx-backup-write, scopes: [write:repository], store_key: gitea_backup_token, check_repo: infra/config-backups }
+
+# --------------------------------------------------------------- NetBox -----
+netbox:
+  tags:
+    - { slug: discover,          color: 2196f3, description: "Queued: AWX will log in and fill in this device" }
+    - { slug: discovering,       color: ff9800, description: "AWX discovery is running" }
+    - { slug: discovered,        color: 4caf50, description: "Filled in by AWX discovery" }
+    - { slug: discovery-failed,  color: f44336, description: "AWX could not discover this device - see its journal" }
+    - { slug: from-solarwinds,   color: 795548, description: "Imported from SolarWinds" }
+    - { slug: not-in-solarwinds, color: 9e9e9e, description: "Was imported from SolarWinds but is no longer there - review" }
+  custom_fields:
+    - { name: os_version,         label: OS version,         type: text,     group_name: Discovery }
+    - { name: last_discovered,    label: Last discovered,    type: datetime, group_name: Discovery }
+    - { name: solarwinds_node_id, label: SolarWinds node ID, type: integer,  group_name: SolarWinds }
+  # Platform = how Ansible logs in. Manufacturers use the device-type library's name/slug.
+  platforms:
+    - { slug: cisco-ios,     name: "Cisco IOS / IOS-XE", manufacturer: { slug: cisco,   name: Cisco },   network_os: cisco.ios.ios }
+    - { slug: cisco-nxos,    name: "Cisco NX-OS",        manufacturer: { slug: cisco,   name: Cisco },   network_os: cisco.nxos.nxos }
+    - { slug: arista-eos,    name: "Arista EOS",         manufacturer: { slug: arista,  name: Arista },  network_os: arista.eos.eos }
+    - { slug: juniper-junos, name: "Juniper Junos",      manufacturer: { slug: juniper, name: Juniper }, network_os: junipernetworks.junos.junos }
+  default_site: { slug: unassigned, name: Unassigned }
+  default_role: { slug: unassigned, name: Unassigned, color: 9e9e9e }
+
+# ------------------------------------------------------------------ AWX -----
+awx:
+  organization: PoC
+  credential_types:
+    - name: NetBox API
+      description: "Injects NETBOX_API / NETBOX_TOKEN"
+      inputs:
+        fields:
+          - { id: NETBOX_API, label: NetBox URL, type: string }
+          - { id: NETBOX_TOKEN, label: NetBox API token, type: string, secret: true }
+        required: [NETBOX_API, NETBOX_TOKEN]
+      injectors: { env: { NETBOX_API: "{{ '{{' }} NETBOX_API {{ '}}' }}", NETBOX_TOKEN: "{{ '{{' }} NETBOX_TOKEN {{ '}}' }}" } }
+    - name: SolarWinds SWIS
+      description: "SolarWinds Platform API (SWIS) - read-only account"
+      inputs:
+        fields:
+          - { id: SW_URL, label: "SWIS URL (https://<server>:17774)", type: string }
+          - { id: SW_USERNAME, label: Username, type: string }
+          - { id: SW_PASSWORD, label: Password, type: string, secret: true }
+          - { id: SW_VERIFY_SSL, label: "Verify TLS certificate (true/false)", type: string }
+        required: []         # empty until you set them (./bootstrap.sh secret solarwinds_url ...)
+      injectors: { env: { SW_URL: "{{ '{{' }} SW_URL {{ '}}' }}", SW_USERNAME: "{{ '{{' }} SW_USERNAME {{ '}}' }}", SW_PASSWORD: "{{ '{{' }} SW_PASSWORD {{ '}}' }}", SW_VERIFY_SSL: "{{ '{{' }} SW_VERIFY_SSL {{ '}}' }}" } }
+    - name: Git push
+      description: "Push access to one Git repo (config backups)"
+      inputs:
+        fields:
+          - { id: GIT_REPO_URL, label: Repo URL, type: string }
+          - { id: GIT_USERNAME, label: Username, type: string }
+          - { id: GIT_TOKEN, label: Token, type: string, secret: true }
+        required: [GIT_REPO_URL, GIT_USERNAME, GIT_TOKEN]
+      injectors: { env: { GIT_REPO_URL: "{{ '{{' }} GIT_REPO_URL {{ '}}' }}", GIT_USERNAME: "{{ '{{' }} GIT_USERNAME {{ '}}' }}", GIT_TOKEN: "{{ '{{' }} GIT_TOKEN {{ '}}' }}" } }
+
+  # inputs: values starting with "env:" are read from the secret store
+  credentials:
+    - { name: "Gitea (read-only)", type: Source Control, inputs: { username: awx, password: "env:gitea_awx_token" } }
+    - { name: NetBox, type: NetBox API, inputs: { NETBOX_API: "{{ netbox_url }}", NETBOX_TOKEN: "env:netbox_api_token" } }
+    - name: "Devices (read-only)"
+      type: Machine
+      description: "Read-only device login (discovery, reports, backups). Set with: ./bootstrap.sh secret device_ro_username / device_ro_password"
+      inputs: { username: "env:device_ro_username", password: "env:device_ro_password" }
+    - name: "Devices (change)"
+      type: Machine
+      description: "Device login allowed to change configuration. Set with: ./bootstrap.sh secret device_rw_username / device_rw_password"
+      inputs: { username: "env:device_rw_username", password: "env:device_rw_password" }
+    - name: SolarWinds
+      type: SolarWinds SWIS
+      description: "Set with: ./bootstrap.sh secret solarwinds_url / solarwinds_username / solarwinds_password"
+      inputs: { SW_URL: "env:solarwinds_url", SW_USERNAME: "env:solarwinds_username", SW_PASSWORD: "env:solarwinds_password", SW_VERIFY_SSL: "env:solarwinds_verify_ssl" }
+    - name: "Gitea (config backups)"
+      type: Git push
+      inputs: { GIT_REPO_URL: "{{ gitea_url }}/infra/config-backups.git", GIT_USERNAME: awx-backup, GIT_TOKEN: "env:gitea_backup_token" }
+
+  project: { name: playbooks, repo: infra/playbooks, branch: main, credential: "Gitea (read-only)" }
+
+  inventories:
+    - name: NetBox
+      description: "Dynamic inventory from NetBox (re-syncs on every job)"
+      source: { name: netbox, path: inventory/netbox.yml, credential: NetBox }
+    - name: Local
+      description: "localhost only - for jobs that only talk to APIs"
+      hosts: [ { name: localhost, variables: { ansible_connection: local, ansible_python_interpreter: "{{ '{{' }} ansible_playbook_python {{ '}}' }}" } } ]
+
+  # Every job runs as its own pod ("ansible worker") in the awx namespace
+  container_group:
+    name: ansible-workers
+    max_concurrent_jobs: 10
+    pod_spec: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        namespace: awx
+        labels: { app.kubernetes.io/component: ansible-worker }
+      spec:
+        serviceAccountName: default
+        automountServiceAccountToken: false
+        containers:
+          - image: ${AWX_EE_IMAGE}
+            name: worker
+            args: ['ansible-runner', 'worker', '--private-data-dir=/runner']
+            resources:
+              requests: { cpu: 250m, memory: 256Mi }
+              limits: { cpu: '2', memory: 2Gi }
+
+  job_templates:
+    # ---- read-only: never change a device (read-only device account) -------
+    - name: "Inventory - Device list"
+      description: "[read-only] Every NetBox device with site, role, model, OS and management IP"
+      playbook: readonly/device_list.yml
+      inventory: NetBox
+      credentials: []
+    - name: "Inventory - Reachability check"
+      description: "[read-only] Which devices answer on SSH and accept the read-only login"
+      playbook: readonly/reachability.yml
+      inventory: NetBox
+      credentials: ["Devices (read-only)"]
+      ask_limit_on_launch: true
+    - name: "Compliance - NetBox drift report"
+      description: "[read-only] Devices whose model, serial or OS version on the device differ from NetBox"
+      playbook: readonly/drift_report.yml
+      inventory: NetBox
+      credentials: ["Devices (read-only)"]
+      ask_limit_on_launch: true
+    - name: "Software - Version report"
+      description: "[read-only] OS versions per platform vs. the baseline in data/software_baseline.yml (NetBox data only)"
+      playbook: readonly/version_report.yml
+      inventory: NetBox
+      credentials: []
+    - name: "Topology - Neighbors"
+      description: "[read-only] LLDP/CDP neighbors per device"
+      playbook: readonly/neighbors.yml
+      inventory: NetBox
+      credentials: ["Devices (read-only)"]
+      ask_limit_on_launch: true
+    - name: "Config - Backup to Git"
+      description: "[read-only on devices] Running configs committed to Gitea infra/config-backups"
+      playbook: readonly/config_backup.yml
+      inventory: NetBox
+      credentials: ["Devices (read-only)", "Gitea (config backups)"]
+      ask_limit_on_launch: true
+    - name: "Show command runner"
+      description: "[read-only] Run one approved show command (pick it from the list)"
+      playbook: readonly/show_command.yml
+      inventory: NetBox
+      credentials: ["Devices (read-only)"]
+      ask_limit_on_launch: true
+      survey:
+        name: Show command
+        description: Approved read-only commands
+        spec:
+          - question_name: Command
+            variable: show_command
+            type: multiplechoice
+            required: true
+            choices: ["show version", "show inventory", "show ip interface brief", "show interfaces status", "show lldp neighbors", "show cdp neighbors", "show running-config"]
+            default: show version
+    # ---- inventory into NetBox --------------------------------------------
+    - name: "NetBox - Discover devices"
+      description: "Fill in the empty fields of devices tagged 'discover' (model, serial, OS, interfaces, IPs)"
+      playbook: netbox_discover.yml
+      inventory: NetBox
+      credentials: ["Devices (read-only)", NetBox]
+      allow_simultaneous: false
+    - name: "SolarWinds - Reconciliation report"
+      description: "[read-only] What an import WOULD change: new, updated, gone, skipped - nothing is written"
+      playbook: solarwinds/sync.yml
+      inventory: Local
+      credentials: [SolarWinds, NetBox]
+      extra_vars: { dry_run: true }
+    - name: "SolarWinds - Import inventory"
+      description: "Import SolarWinds nodes into NetBox (normalized, never deletes); new devices are tagged for discovery"
+      playbook: solarwinds/sync.yml
+      inventory: Local
+      credentials: [SolarWinds, NetBox]
+      extra_vars: { dry_run: false }
+    - name: "NetBox - Load devices"
+      description: "Create/update devices defined in data/netbox_devices.yml (Git-defined inventory)"
+      playbook: netbox_load_devices.yml
+      inventory: Local
+      credentials: [NetBox]
+    - name: "Hello World"
+      description: "Smoke test - runs on localhost in a worker pod"
+      playbook: hello.yml
+      inventory: Local
+      credentials: []
+
+  workflows:
+    - name: "SolarWinds - Sync"
+      description: "Import from SolarWinds, then discover the new devices"
+      steps: ["SolarWinds - Import inventory", "NetBox - Discover devices"]
+
+  schedules:
+    - { name: "Discovery sweep every 30 minutes", template: "NetBox - Discover devices", rrule: "DTSTART:20260101T000000Z RRULE:FREQ=MINUTELY;INTERVAL=30" }
+    - { name: "Config backup nightly",            template: "Config - Backup to Git",    rrule: "DTSTART:20260101T010000Z RRULE:FREQ=DAILY;INTERVAL=1" }
+    - { name: "SolarWinds sync nightly",          template: "SolarWinds - Sync",         rrule: "DTSTART:20260101T020000Z RRULE:FREQ=DAILY;INTERVAL=1", enabled_if_env: solarwinds_url }
+
+  # NetBox launches discovery as this user; it may only execute that one template
+  events_user: { username: netbox-events, password_env: awx_events_password, token_store_key: awx_events_token, may_execute: "NetBox - Discover devices" }
+
+  smoke_test: "Hello World"

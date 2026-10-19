@@ -1,0 +1,37 @@
+---
+# [read-only] Run one approved show command (chosen from the list in the AWX survey).
+- name: Show command runner
+  hosts: all
+  gather_facts: false
+  vars:
+    show_command: show version
+    allowed_commands:
+      - show version
+      - show inventory
+      - show ip interface brief
+      - show interfaces status
+      - show lldp neighbors
+      - show cdp neighbors
+      - show running-config
+  tasks:
+    - name: Only approved read-only commands
+      ansible.builtin.assert:
+        that: show_command in allowed_commands
+        fail_msg: "'{{ show_command }}' is not on the approved list"
+        quiet: true
+      run_once: true
+
+    - name: Skip devices NetBox can't tell us how to reach
+      ansible.builtin.meta: end_host
+      when: ansible_network_os is not defined or primary_ip4 is not defined
+
+    - name: "{{ show_command }}"
+      ansible.netcommon.cli_command:
+        command: "{{ show_command }}"
+      register: _out
+      ignore_errors: true
+      ignore_unreachable: true
+
+    - name: Output
+      ansible.builtin.debug:
+        msg: "{{ _out.stdout_lines | default(_out.msg | default('no output')) }}"

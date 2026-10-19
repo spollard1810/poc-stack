@@ -1,0 +1,55 @@
+# =============================================================================
+#  SolarWinds -> NetBox: what to read, and how to normalize it.
+#  Edit and commit; the next "SolarWinds - Import inventory" run uses it.
+#  Rules are regular expressions (case-insensitive); the first match wins.
+#  Run "SolarWinds - Reconciliation report" first to see the effect without writing.
+# =============================================================================
+
+# ---- what to read (SWIS / SWQL, SolarWinds Platform 2026.1.x) --------------------
+# Core Orion.Nodes columns only. Add columns or custom properties here if your
+# schema has them (custom properties: JOIN Orion.NodesCustomProperties cp ON cp.NodeID = n.NodeID).
+# Scope = whatever the SolarWinds account may see (account limitations / groups).
+query: >-
+  SELECT n.NodeID, n.Caption, n.DNS, n.SysName, n.IPAddress, n.Vendor, n.MachineType,
+         n.IOSImage, n.IOSVersion, n.Location, n.Status
+  FROM Orion.Nodes n
+order_by: n.NodeID
+page_size: 200
+
+# ---- hostnames -----------------------------------------------------------------
+hostname:
+  sources: [Caption, SysName, DNS]   # first non-empty one is used
+  strip_domain: true                 # "rtr1.corp.local" -> "rtr1"
+  lowercase: true
+
+# ---- what NOT to import (SolarWinds also monitors servers, VMs, printers...) ----
+skip:
+  - { field: Vendor,  match: 'windows|microsoft|vmware|linux|net-snmp|ubuntu|red ?hat', reason: "server / VM, not a network device" }
+  - { field: Vendor,  match: 'unknown|^$',  reason: "SolarWinds doesn't know the vendor" }
+  # - { field: Status, match: '^9$', reason: "unmanaged in SolarWinds" }
+
+# ---- vendor -> NetBox manufacturer (slug, as created by the device-type library) --
+vendors:
+  - { match: 'cisco',    manufacturer: cisco }
+  - { match: 'arista',   manufacturer: arista }
+  - { match: 'juniper',  manufacturer: juniper }
+
+# ---- manufacturer + model/OS -> NetBox platform (decides how AWX logs in) ---------
+platform_fields: [MachineType, IOSImage, IOSVersion]
+platforms:
+  - { manufacturer: cisco,   match: 'nexus|nx-?os',  platform: cisco-nxos }
+  - { manufacturer: cisco,   match: '.*',            platform: cisco-ios }
+  - { manufacturer: arista,  match: '.*',            platform: arista-eos }
+  - { manufacturer: juniper, match: '.*',            platform: juniper-junos }
+
+# ---- SolarWinds Location -> NetBox site slug (sites must exist in NetBox) ---------
+site_field: Location
+default_site: unassigned
+sites: []
+#  - { match: '^dc1|datacenter 1', site: dc1 }
+
+# ---- hostname -> NetBox role slug (roles must exist in NetBox) --------------------
+default_role: unassigned
+roles: []
+#  - { match: '-(rtr|r)[0-9]+$', role: router }
+#  - { match: '-(sw|asw)[0-9]+$', role: access-switch }

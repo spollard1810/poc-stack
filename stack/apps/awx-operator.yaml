@@ -1,0 +1,20 @@
+# AWX operator (awx-operator/).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: awx-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: awx
+  source:
+    repoURL: ${STACK_REPO_URL}
+    targetRevision: main
+    path: awx-operator
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    retry: { limit: 10, backoff: { duration: 20s, factor: 2, maxDuration: 5m } }

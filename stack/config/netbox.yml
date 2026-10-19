@@ -1,0 +1,153 @@
+---
+# ---------------- API token for AWX (kept while it works, else re-issued) --------
+- name: "NetBox: stored API token"
+  ansible.builtin.set_fact:
+    netbox_api_token: "{{ lookup('ansible.builtin.env', 'netbox_api_token') }}"
+  no_log: true
+
+- name: "NetBox: does the stored token still work?"
+  ansible.builtin.uri:
+    url: "{{ netbox_url }}/api/users/config/"
+    headers: { Authorization: "{{ ('Bearer ' if netbox_api_token.startswith('nbt_') else 'Token ') ~ netbox_api_token }}" }
+    status_code: [200, 401, 403]
+  register: _nb_token_check
+  when: netbox_api_token | length > 0
+  no_log: true
+
+- name: "NetBox: issue a new API token"
+  ansible.builtin.uri:
+    url: "{{ netbox_url }}/api/users/tokens/provision/"
+    method: POST
+    body_format: json
+    body: { username: "{{ admin_user }}", password: "{{ admin_password }}", description: "AWX (managed by the configure job)", write_enabled: true }
+    status_code: 201
+  register: _nb_new_token
+  when: netbox_api_token | length == 0 or _nb_token_check.status | default(0) != 200
+  no_log: true
+
+- name: "NetBox: use and save the new token"
+  when: _nb_new_token is not skipped
+  block:
+    - name: "NetBox: new token value"
+      ansible.builtin.set_fact:
+        # v2 tokens (NetBox 4.5+) are sent as nbt_<key>.<secret>
+        netbox_api_token: >-
+          {{ ('nbt_' ~ _nb_new_token.json.key ~ '.' ~ _nb_new_token.json.token)
+             if _nb_new_token.json.key | default('') else _nb_new_token.json.token }}
+      no_log: true
+    - name: "NetBox: save token"
+      ansible.builtin.include_tasks: store.yml
+      vars: { store_key: netbox_api_token, store_value: "{{ netbox_api_token }}" }
+
+- name: "NetBox: auth header for the rest of this run"
+  ansible.builtin.set_fact:
+    nb_auth: "{{ ('Bearer ' if netbox_api_token.startswith('nbt_') else 'Token ') ~ netbox_api_token }}"
+  no_log: true
+
+# ---------------- objects ---------------------------------------------------------
+- name: "NetBox: tags"
+  ansible.builtin.include_tasks: nb_ensure.yml
+  vars:
+    nb_key: "tag_{{ item.slug }}"
+    nb_endpoint: extras/tags
+    nb_query: "slug={{ item.slug }}"
+    nb_body: { name: "{{ item.slug }}", slug: "{{ item.slug }}", color: "{{ item.color }}", description: "{{ item.description }}" }
+  loop: "{{ netbox.tags }}"
+  loop_control: { label: "{{ item.slug }}" }
+
+- name: "NetBox: custom fields"
+  ansible.builtin.include_tasks: nb_ensure.yml
+  vars:
+    nb_key: "cf_{{ item.name }}"
+    nb_endpoint: extras/custom-fields
+    nb_query: "name={{ item.name }}"
+    nb_body: { name: "{{ item.name }}", label: "{{ item.label }}", type: "{{ item.type }}", object_types: [dcim.device], group_name: "{{ item.group_name }}" }
+  loop: "{{ netbox.custom_fields }}"
+  loop_control: { label: "{{ item.name }}" }
+
+- name: "NetBox: manufacturers (same name/slug as the device-type library, so imports merge)"
+  ansible.builtin.include_tasks: nb_ensure.yml
+  vars:
+    nb_key: "mfr_{{ item.slug }}"
+    nb_endpoint: dcim/manufacturers
+    nb_query: "slug={{ item.slug }}"
+    nb_body: "{{ item }}"
+  loop: "{{ netbox.platforms | map(attribute='manufacturer') | unique | list }}"
+  loop_control: { label: "{{ item.slug }}" }
+
+- name: "NetBox: 'Pending discovery' placeholder device type per manufacturer"
+  ansible.builtin.include_tasks: nb_ensure.yml
+  vars:
+    nb_key: "dt_{{ item.slug }}"
+    nb_endpoint: dcim/device-types
+    nb_query: "slug={{ item.slug }}-pending-discovery"
+    nb_body:
+      manufacturer: "{{ nb_ids['mfr_' ~ item.slug] }}"
+      model: Pending discovery
+      slug: "{{ item.slug }}-pending-discovery"
+      u_height: 0
+      comments: Placeholder until AWX discovery matches the real model (by part number) from the device-type library.
+  loop: "{{ netbox.platforms | map(attribute='manufacturer') | unique | list }}"
+  loop_control: { label: "{{ item.slug }}" }
+
+- name: "NetBox: platforms"
+  ansible.builtin.include_tasks: nb_ensure.yml
+  vars:
+    nb_key: "platform_{{ item.slug }}"
+    nb_endpoint: dcim/platforms
+    nb_query: "slug={{ item.slug }}"
+    nb_body: { name: "{{ item.name }}", slug: "{{ item.slug }}", manufacturer: "{{ nb_ids['mfr_' ~ item.manufacturer.slug] }}" }
+  loop: "{{ netbox.platforms }}"
+  loop_control: { label: "{{ item.slug }}" }
+
+- name: "NetBox: per-platform Ansible login settings (config contexts)"
+  ansible.builtin.include_tasks: nb_ensure.yml
+  vars:
+    nb_key: "cc_{{ item.slug }}"
+    nb_endpoint: extras/config-contexts
+    nb_query: "name={{ ('Ansible login: ' ~ item.name) | urlencode }}"
+    nb_body:
+      name: "Ansible login: {{ item.name }}"
+      weight: 1000
+      platforms: ["{{ nb_ids['platform_' ~ item.slug] }}"]
+      description: How AWX connects to devices on this platform
+      data: { ansible_network_os: "{{ item.network_os }}", ansible_connection: ansible.netcommon.network_cli }
+  loop: "{{ netbox.platforms }}"
+  loop_control: { label: "{{ item.slug }}" }
+
+- name: "NetBox: default site and role"
+  ansible.builtin.include_tasks: nb_ensure.yml
+  vars:
+    nb_key: "{{ item.key }}"
+    nb_endpoint: "{{ item.endpoint }}"
+    nb_query: "slug={{ item.body.slug }}"
+    nb_body: "{{ item.body }}"
+  loop:
+    - { key: default_site, endpoint: dcim/sites, body: "{{ netbox.default_site | combine({'status': 'planned', 'description': 'Devices waiting to be placed'}) }}" }
+    - { key: default_role, endpoint: dcim/device-roles, body: "{{ netbox.default_role }}" }
+  loop_control: { label: "{{ item.key }}" }
+
+# ---------------- custom script "Add devices for discovery" -----------------------
+- name: "NetBox: update the discovery script"
+  ansible.builtin.uri:
+    url: "{{ netbox_url }}/api/extras/scripts/upload/discovery.py/"
+    method: PATCH
+    headers: { Authorization: "{{ nb_auth }}" }
+    body_format: form-multipart
+    body:
+      file: { filename: /config/discovery.py, mime_type: text/x-python }
+    status_code: [200, 404]
+  register: _script
+  no_log: true
+
+- name: "NetBox: install the discovery script"
+  ansible.builtin.uri:
+    url: "{{ netbox_url }}/api/extras/scripts/upload/"
+    method: POST
+    headers: { Authorization: "{{ nb_auth }}" }
+    body_format: form-multipart
+    body:
+      file: { filename: /config/discovery.py, mime_type: text/x-python }
+    status_code: 201
+  when: _script.status == 404
+  no_log: true

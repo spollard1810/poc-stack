@@ -1,0 +1,42 @@
+# Creates the netbox and awx databases/roles (idempotent) and keeps their passwords in
+# step with the secret store. Runs after every sync of the data app.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-init
+  namespace: data
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: psql
+          image: ${POSTGRES_IMAGE}
+          env:
+            - { name: PGHOST, value: postgres }
+            - { name: PGUSER, value: postgres }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-superuser, key: password } }
+            - name: NETBOX_PW
+              valueFrom: { secretKeyRef: { name: db-init, key: netbox } }
+            - name: AWX_PW
+              valueFrom: { secretKeyRef: { name: db-init, key: awx } }
+          command: [bash, -ec]
+          args:
+            - |
+              until pg_isready -q; do echo "waiting for postgres"; sleep 3; done
+              for app in netbox awx; do
+                pw_var="${app^^}_PW"
+                psql -v ON_ERROR_STOP=1 -d postgres -v app="$app" -v pw="${!pw_var}" <<'SQL'
+              SELECT format('CREATE ROLE %I LOGIN', :'app') WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'app')\gexec
+              SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'app', :'pw')\gexec
+              SELECT format('CREATE DATABASE %I OWNER %I', :'app', :'app') WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'app')\gexec
+              SQL
+                echo "database $app ready"
+              done
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }

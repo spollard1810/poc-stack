@@ -1,0 +1,49 @@
+---
+# [read-only] Which devices answer on SSH, and accept the read-only login.
+# Uses the "Devices (read-only)" credential; runs one harmless "show version".
+- name: Inventory - Reachability check
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Devices NetBox can't tell us how to reach
+      ansible.builtin.set_fact:
+        reach: "{{ 'no platform in NetBox' if ansible_network_os is not defined else 'no management IP in NetBox' }}"
+      when: ansible_network_os is not defined or primary_ip4 is not defined
+
+    - name: SSH port open?
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ ansible_port | default(22) }}"
+        timeout: 5
+      delegate_to: localhost
+      register: _port
+      ignore_errors: true
+      when: reach is not defined
+
+    - name: Read-only login works?
+      ansible.netcommon.cli_command:
+        command: show version
+      register: _login
+      ignore_errors: true
+      ignore_unreachable: true
+      when: reach is not defined and _port is succeeded
+
+    - name: Result per device
+      ansible.builtin.set_fact:
+        reach: >-
+          {{ reach if reach is defined else
+             ('SSH port closed / no route' if _port is failed else
+             ('OK' if _login is succeeded and not (_login.unreachable | default(false)) else
+              'login failed: ' ~ (_login.msg | default('unreachable') | string | truncate(120)))) }}
+
+    - name: Reachability
+      ansible.builtin.debug:
+        msg: "{{ ansible_play_hosts | sort | map('extract', hostvars) | map(attribute='reach') | zip(ansible_play_hosts | sort) | map('reverse') | map('join', ': ') | list }}"
+      run_once: true
+
+    - name: Summary for AWX
+      ansible.builtin.set_stats:
+        data:
+          reachable: "{{ ansible_play_hosts | map('extract', hostvars, 'reach') | select('equalto', 'OK') | list | length }}"
+          not_reachable: "{{ ansible_play_hosts | map('extract', hostvars, 'reach') | reject('equalto', 'OK') | list | length }}"
+      run_once: true

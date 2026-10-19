@@ -1,0 +1,23 @@
+# Settings inside AWX, NetBox and Gitea as code. Edit settings.yml (or the task files)
+# and commit: the files become a ConfigMap with a new name, Argo CD sees the change,
+# syncs, and re-runs the "configure" job.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: poc-config
+resources:
+  - rbac.yaml
+  - job.yaml
+configMapGenerator:
+  - name: config-playbooks
+    files:
+      - configure.yml
+      - settings.yml
+      - requirements.yml
+      - wait.yml
+      - gitea.yml
+      - netbox.yml
+      - nb_ensure.yml
+      - awx.yml
+      - events.yml
+      - store.yml
+      - discovery.py

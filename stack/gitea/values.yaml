@@ -1,0 +1,72 @@
+# Gitea (chart gitea-charts/gitea). Installed once by bootstrap.sh, then managed by
+# Argo CD (apps/gitea.yaml) from this file.
+#
+# Gitea is where this repo lives, so it deliberately depends on nothing Argo CD
+# deploys: its own embedded database (SQLite) and in-process cache/queues. A broken
+# platform database can never take the Git server down with it.
+gitea:
+  admin:
+    existingSecret: gitea-admin          # keys: username, password (from the secret store)
+    email: "${POC_ADMIN_EMAIL}"
+    passwordMode: keepUpdated
+
+  config:
+    server:
+      DOMAIN: "${NODE_IP}"
+      ROOT_URL: http://${NODE_IP}:${GITEA_PORT}/
+      LANDING_PAGE: login                # home page goes straight to sign-in
+      SSH_DOMAIN: "${NODE_IP}"
+      SSH_PORT: ${GITEA_SSH_PORT}
+    database:
+      DB_TYPE: sqlite3
+    cache:
+      ADAPTER: memory
+    session:
+      PROVIDER: db
+    queue:
+      TYPE: level
+    service:
+      DISABLE_REGISTRATION: true
+      REQUIRE_SIGNIN_VIEW: true          # nothing (repos, users, API) visible without login
+    service.explore:
+      REQUIRE_SIGNIN_VIEW: true
+    repository:
+      DEFAULT_BRANCH: main
+    packages:
+      ENABLED: true                      # container/package registry (custom AWX job images)
+    webhook:
+      ALLOWED_HOST_LIST: "*.svc.cluster.local"
+
+persistence:
+  enabled: true
+  storageClass: "${STORAGE_CLASS}"
+  size: "${GITEA_SIZE}"
+  annotations: { argocd.argoproj.io/sync-options: Prune=false }
+
+# Exposed on NODE_IP:GITEA_PORT / GITEA_SSH_PORT (no ingress / DNS)
+service:
+  http:
+    type: NodePort
+    nodePort: ${GITEA_PORT}
+  ssh:
+    type: NodePort
+    nodePort: ${GITEA_SSH_PORT}
+
+ingress:
+  enabled: false
+
+postgresql:
+  enabled: false
+postgresql-ha:
+  enabled: false
+valkey:
+  enabled: false
+valkey-cluster:
+  enabled: false
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits: { memory: 1Gi }
+
+test:
+  enabled: false

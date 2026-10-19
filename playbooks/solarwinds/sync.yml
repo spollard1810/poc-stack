@@ -1,0 +1,180 @@
+---
+# SolarWinds -> NetBox inventory sync (single-source-of-truth pattern):
+#   1. extract   read Orion.Nodes through the SWIS REST API (read-only account)
+#   2. normalize hostnames, vendor -> manufacturer, platform, site, role (mapping.yml)
+#   3. reconcile match on SolarWinds node id, then name, then IP; NetBox stays the
+#                source of truth:
+#                - new devices are created and tagged "discover" (AWX discovery then
+#                  logs in and fills in model, serial, OS, interfaces)
+#                - existing devices only get empty fields filled
+#                - devices no longer in SolarWinds are tagged "not-in-solarwinds";
+#                  nothing is ever deleted
+# dry_run=true (job "SolarWinds - Reconciliation report") only reports.
+#
+# AWX : "SolarWinds - Reconciliation report" / "SolarWinds - Import inventory" /
+#       workflow "SolarWinds - Sync" (import, then discovery)
+- name: SolarWinds -> NetBox
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    dry_run: true
+    sw_url: "{{ lookup('ansible.builtin.env', 'SW_URL') | regex_replace('/+$', '') }}"
+    sw_user: "{{ lookup('ansible.builtin.env', 'SW_USERNAME') }}"
+    sw_password: "{{ lookup('ansible.builtin.env', 'SW_PASSWORD') }}"
+    sw_verify: "{{ lookup('ansible.builtin.env', 'SW_VERIFY_SSL') | default('false', true) | bool }}"
+    sw_query_url: "{{ sw_url }}/SolarWinds/InformationService/v3/Json/Query"
+    nb_url: "{{ lookup('ansible.builtin.env', 'NETBOX_API') }}"
+    nb_token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
+    nb_auth: "{{ ('Bearer ' if nb_token.startswith('nbt_') else 'Token ') ~ nb_token }}"
+    run_ref: "{{ ('AWX job #' ~ awx_job_id) if awx_job_id is defined else 'ansible-playbook' }}"
+
+  tasks:
+    - name: Load the mapping (mapping.yml)
+      ansible.builtin.include_vars: { file: mapping.yml, name: sw_map }
+
+    - name: SolarWinds connection is configured
+      ansible.builtin.assert:
+        that: sw_url | length > 0 and sw_user | length > 0
+        fail_msg: >-
+          The SolarWinds credential is empty. On the server run:
+          ./bootstrap.sh secret solarwinds_url https://<solarwinds>:17774 ;
+          ./bootstrap.sh secret solarwinds_username <user> ;
+          ./bootstrap.sh secret solarwinds_password <password>
+        quiet: true
+
+    # ------------------------------------------------------------- 1. extract ----
+    - name: Count nodes visible to the SolarWinds account
+      ansible.builtin.uri:
+        url: "{{ sw_query_url }}"
+        method: POST
+        user: "{{ sw_user }}"
+        password: "{{ sw_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ sw_verify }}"
+        body_format: json
+        body: { query: "{{ sw_map.query }} ORDER BY {{ sw_map.order_by }} WITH ROWS 1 TO 1 WITH TOTALROWS", parameters: {} }
+        timeout: 60
+      register: _count
+      no_log: true
+
+    - name: Read nodes ({{ _count.json.totalRows }} in pages of {{ sw_map.page_size }})
+      ansible.builtin.uri:
+        url: "{{ sw_query_url }}"
+        method: POST
+        user: "{{ sw_user }}"
+        password: "{{ sw_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ sw_verify }}"
+        body_format: json
+        body: { query: "{{ sw_map.query }} ORDER BY {{ sw_map.order_by }} WITH ROWS {{ item }} TO {{ item + sw_map.page_size - 1 }}", parameters: {} }
+        timeout: 120
+      loop: "{{ range(1, (_count.json.totalRows | int) + 1, sw_map.page_size) | list }}"
+      loop_control: { label: "rows {{ item }}-{{ item + sw_map.page_size - 1 }}" }
+      register: _pages
+      no_log: true
+
+    - name: Combine pages
+      ansible.builtin.set_fact:
+        sw_nodes: "{{ _pages.results | map(attribute='json') | map(attribute='results') | flatten }}"
+
+    # ----------------------------------------------------------- 2. normalize ----
+    - name: Normalize
+      ansible.builtin.set_fact:
+        sw_records: "{{ sw_nodes | sw_normalize(sw_map) }}"
+
+    # ----------------------------------------------------------- 3. reconcile ----
+    - name: Count NetBox devices
+      ansible.builtin.uri:
+        url: "{{ nb_url }}/api/dcim/devices/?limit=1&brief=true"
+        headers: { Authorization: "{{ nb_auth }}" }
+      register: _nb_count
+      no_log: true
+
+    - name: Read NetBox devices
+      ansible.builtin.uri:
+        url: "{{ nb_url }}/api/dcim/devices/?limit=1000&offset={{ item }}"
+        headers: { Authorization: "{{ nb_auth }}" }
+      loop: "{{ range(0, [_nb_count.json.count | int, 1] | max, 1000) | list }}"
+      loop_control: { label: "offset {{ item }}" }
+      register: _nb_pages
+      no_log: true
+
+    - name: Plan
+      ansible.builtin.set_fact:
+        plan: >-
+          {{ sw_records | sw_plan(_nb_pages.results | map(attribute='json') | map(attribute='results') | flatten) }}
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          mode: "{{ 'DRY RUN - nothing written' if dry_run else 'IMPORT' }}"
+          solarwinds_nodes: "{{ sw_nodes | length }}"
+          create: "{{ plan.create | map(attribute='name') | list }}"
+          update: "{{ plan.update | map(attribute='name') | list }}"
+          unchanged: "{{ plan.unchanged | length }}"
+          no_longer_in_solarwinds: "{{ plan.gone | map(attribute='name') | list }}"
+          conflicts: "{{ plan.conflicts | map(attribute='name') | zip(plan.conflicts | map(attribute='conflict')) | map('join', ': ') | list }}"
+          skipped: "{{ plan.skipped | map(attribute='caption') | zip(plan.skipped | map(attribute='skip_reason')) | map('join', ': ') | list }}"
+
+    - name: Summary for AWX
+      ansible.builtin.set_stats:
+        data:
+          solarwinds_nodes: "{{ sw_nodes | length }}"
+          created: "{{ 0 if dry_run else plan.create | length }}"
+          would_create: "{{ plan.create | length }}"
+          updated: "{{ 0 if dry_run else plan.update | length }}"
+          gone: "{{ plan.gone | length }}"
+          skipped: "{{ plan.skipped | length }}"
+          conflicts: "{{ plan.conflicts | length }}"
+
+    - name: Apply
+      when: not dry_run
+      block:
+        - name: NetBox ids for sites, roles, platforms and placeholder types
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/{{ item }}/?limit=1000"
+            headers: { Authorization: "{{ nb_auth }}" }
+          loop: [dcim/sites, dcim/device-roles, dcim/platforms, dcim/device-types]
+          register: _ref
+          no_log: true
+
+        - name: Index them by slug
+          ansible.builtin.set_fact:
+            nb_ref:
+              site: "{{ dict(_ref.results[0].json.results | map(attribute='slug') | zip(_ref.results[0].json.results | map(attribute='id'))) }}"
+              role: "{{ dict(_ref.results[1].json.results | map(attribute='slug') | zip(_ref.results[1].json.results | map(attribute='id'))) }}"
+              platform: "{{ dict(_ref.results[2].json.results | map(attribute='slug') | zip(_ref.results[2].json.results | map(attribute='id'))) }}"
+              device_type: "{{ dict(_ref.results[3].json.results | map(attribute='slug') | zip(_ref.results[3].json.results | map(attribute='id'))) }}"
+
+        - name: Create new devices (tagged for discovery)
+          ansible.builtin.include_tasks: create_device.yml
+          loop: "{{ plan.create }}"
+          loop_control: { loop_var: rec, label: "{{ rec.name }} ({{ rec.ip }})" }
+
+        - name: Update existing devices (empty fields only)
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/dcim/devices/{{ item.id }}/"
+            method: PATCH
+            headers: { Authorization: "{{ nb_auth }}" }
+            body_format: json
+            body: >-
+              {{ {}
+                 | combine({'custom_fields': item.changes.custom_fields} if item.changes.custom_fields is defined else {})
+                 | combine({'platform': nb_ref.platform[item.changes.platform]} if item.changes.platform is defined else {})
+                 | combine({'tags': item.changes.tags | map('regex_replace', '^(.*)$', '{"slug": "\1"}') | map('from_json') | list}
+                           if item.changes.tags is defined else {}) }}
+          loop: "{{ plan.update }}"
+          loop_control: { label: "{{ item.name }}" }
+          no_log: true
+
+        - name: Flag devices no longer in SolarWinds (never deleted)
+          ansible.builtin.uri:
+            url: "{{ nb_url }}/api/dcim/devices/{{ item.id }}/"
+            method: PATCH
+            headers: { Authorization: "{{ nb_auth }}" }
+            body_format: json
+            body: { tags: "{{ item.tags | map('regex_replace', '^(.*)$', '{\"slug\": \"\\1\"}') | map('from_json') | list }}" }
+          loop: "{{ plan.gone }}"
+          loop_control: { label: "{{ item.name }}" }
+          no_log: true

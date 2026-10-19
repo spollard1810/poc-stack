@@ -1,0 +1,27 @@
+---
+# [read-only] Every device in NetBox with site, role, model, OS and management IP.
+# Reads the AWX "NetBox" inventory only - no device logins.
+- name: Inventory - Device list
+  hosts: all
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: One line per device
+      ansible.builtin.set_fact:
+        row: >-
+          {{ inventory_hostname }} | {{ sites | default(['-']) | first }} | {{ device_roles | default(['-']) | first }} |
+          {{ device_types | default(['-']) | first }} | {{ platforms | default(['-']) | first }} |
+          OS {{ custom_fields.os_version | default('-', true) }} | {{ primary_ip4 | default('no mgmt IP') }} |
+          {{ status.value | default('-') }} | tags: {{ tags | default([]) | join(',') }}
+
+    - name: Device list (name | site | role | type | platform | OS | mgmt IP | status | tags)
+      ansible.builtin.debug:
+        msg: "{{ ansible_play_hosts | sort | map('extract', hostvars, 'row') | list }}"
+      run_once: true
+
+    - name: Summary for AWX
+      ansible.builtin.set_stats:
+        data:
+          devices: "{{ ansible_play_hosts | length }}"
+          without_mgmt_ip: "{{ ansible_play_hosts | map('extract', hostvars) | rejectattr('primary_ip4', 'defined') | list | length }}"
+      run_once: true

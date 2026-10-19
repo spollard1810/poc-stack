@@ -1,0 +1,14 @@
+---
+# Save one value into the secret store (secret-store/poc-secrets).
+# vars: store_key, store_value
+- name: "Save {{ store_key }} to the secret store"
+  ansible.builtin.uri:
+    url: "{{ k8s_api }}/api/v1/namespaces/secret-store/secrets/poc-secrets"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.file', k8s_sa ~ '/token') }}"
+      Content-Type: application/merge-patch+json
+    body_format: json
+    body: "{{ {'data': {store_key: store_value | b64encode}} }}"
+    ca_path: "{{ k8s_sa }}/ca.crt"
+  no_log: true
