@@ -35,7 +35,13 @@
           comments: "Imported from SolarWinds node {{ rec.node_id }} ({{ rec.caption }}). Model, serial and interfaces are filled in by AWX discovery."
         status_code: 201
       register: _dev
-      no_log: true
+      failed_when: false
+      no_log: true   # hides the token; NetBox's answer is shown below if it refused
+
+    - name: "{{ rec.name }}: NetBox refused the device"
+      ansible.builtin.fail:
+        msg: "HTTP {{ _dev.status }}: {{ _dev.json | default(_dev.msg) }}"
+      when: _dev.status != 201
 
     - name: "{{ rec.name }}: placeholder management interface"
       ansible.builtin.uri:
