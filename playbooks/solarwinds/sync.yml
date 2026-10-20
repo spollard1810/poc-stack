@@ -133,9 +133,14 @@
       block:
         - name: NetBox ids for sites, roles, platforms and placeholder types
           ansible.builtin.uri:
-            url: "{{ nb_url }}/api/{{ item }}/?limit=1000"
+            url: "{{ nb_url }}/api/{{ item }}"
             headers: { Authorization: "{{ nb_auth }}" }
-          loop: [dcim/sites, dcim/device-roles, dcim/platforms, dcim/device-types]
+          loop:
+            - dcim/sites/?limit=1000
+            - dcim/device-roles/?limit=1000
+            - dcim/platforms/?limit=1000
+            # only the placeholders: the device-type library has thousands of types
+            - dcim/device-types/?slug__iew=-pending-discovery&limit=1000
           register: _ref
           no_log: true
 
