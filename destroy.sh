@@ -20,6 +20,17 @@ kubectl -n argocd get applications.argoproj.io -o name 2>/dev/null \
 log "Removing AWX (lets the operator clean up)"
 kubectl -n awx delete awx --all --wait=true --timeout=300s >/dev/null 2>&1 || true
 
+log "Removing External Secrets objects (while their operator still runs)"
+kubectl delete externalsecrets.external-secrets.io -A --all --timeout=120s >/dev/null 2>&1 || true
+# If the operator is already gone, nothing removes their cleanup finalizer - drop it
+kubectl get externalsecrets.external-secrets.io -A -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name}{"\n"}{end}' 2>/dev/null \
+  | while read -r ns name; do
+      kubectl -n "$ns" patch externalsecrets.external-secrets.io "$name" --type merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+    done
+# Its admission webhooks would block deleting the other namespaces once it is gone
+kubectl get validatingwebhookconfiguration,mutatingwebhookconfiguration -o name 2>/dev/null \
+  | grep -E 'externalsecret|secretstore|external-secrets' | xargs -r kubectl delete >/dev/null 2>&1 || true
+
 log "Deleting namespaces and their volumes"
 for ns in poc-config awx netbox data external-secrets secret-store gitea argocd; do
   kubectl delete namespace "$ns" --ignore-not-found --wait=false >/dev/null
