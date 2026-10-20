@@ -12,7 +12,8 @@
       ansible.builtin.gather_facts:
         gather_subset: [min, interfaces]
       ignore_unreachable: true
-      ignore_errors: true
+      failed_when: false          # one line in the report instead of a traceback
+      register: _facts
 
     - name: Neighbor lines
       ansible.builtin.set_fact:
@@ -23,7 +24,12 @@
               {%- set _ = out.append(inventory_hostname ~ ' ' ~ intf ~ ' -> ' ~ p.host | default('?') ~ ' ' ~ p.port | default('?')) -%}
             {%- endfor -%}
           {%- endfor -%}
-          {{ out if ansible_net_hostname is defined else [inventory_hostname ~ ': could not read the device'] }}
+          {%- if ansible_net_hostname is not defined -%}
+            {%- set out = [inventory_hostname ~ ': could not read the device (' ~ (_facts.failed_modules | default({}) | dict2items | map(attribute='value.msg') | first | default(_facts.msg | default('unreachable')) | string | truncate(80)) ~ ')'] -%}
+          {%- elif not out -%}
+            {%- set out = [inventory_hostname ~ ': no LLDP/CDP neighbors'] -%}
+          {%- endif -%}
+          {{ out }}
 
     - name: Neighbors (device interface -> neighbor port)
       ansible.builtin.debug:

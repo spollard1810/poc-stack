@@ -13,7 +13,7 @@
       ansible.builtin.gather_facts:
         gather_subset: [min]
       ignore_unreachable: true
-      ignore_errors: true
+      failed_when: false          # one line in the report instead of a traceback
       register: _facts
 
     - name: Differences
@@ -21,7 +21,7 @@
         drift: >-
           {%- set d = [] -%}
           {%- if ansible_net_model is not defined -%}
-            {%- set _ = d.append('could not read the device') -%}
+            {%- set _ = d.append('could not read the device (' ~ (_facts.failed_modules | default({}) | dict2items | map(attribute='value.msg') | first | default(_facts.msg | default('unreachable')) | string | truncate(80)) ~ ')') -%}
           {%- else -%}
             {%- if ansible_net_serialnum | default('') != serial | default('') -%}
               {%- set _ = d.append('serial: NetBox ' ~ (serial | default('', true) or 'empty') ~ ', device ' ~ ansible_net_serialnum | default('?')) -%}
