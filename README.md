@@ -21,18 +21,29 @@ into Gitea, and Argo CD deploys and maintains the rest, including Gitea and itse
 | NetBox `http://<NODE_IP>:30080` | AWX `http://<NODE_IP>:30081` |
 | Gitea `http://<NODE_IP>:30082` | Argo CD `http://<NODE_IP>:30083` |
 
-One login for all four: `pocadmin` / the password in `config.env` (change it before the first
-run). Nothing in any app is visible without logging in.
+One login for all four: the admin account you choose during setup (default user `pocadmin`).
+Nothing in any app is visible without logging in.
 
 ## Quick start
 
 ```bash
 git clone <this repo> poc-stack && cd poc-stack
-vi config.env                     # admin password, ports, sizes
-sudo ./bootstrap.sh               # ~25 min on first run
-# device logins (read-only for reports, change for future write jobs) and SolarWinds:
-sudo ./bootstrap.sh secret device_ro_username <user> device_ro_password <password>                            device_rw_username <user> device_rw_password <password>                            solarwinds_url https://<solarwinds>:17774                            solarwinds_username <user> solarwinds_password <password>
+sudo ./bootstrap.sh               # asks a few questions, then ~25 min on first run
 ```
+
+The first run walks you through setup step by step (Enter accepts the default):
+
+1. **Platform:** node IP (auto-detected), admin username, email and password.
+   Press Enter at the password to have a strong one generated.
+2. **Device logins** (optional): read-only (discovery and reports) and change (future write jobs).
+3. **SolarWinds** (optional): SWIS URL, read-only account, verify TLS or not.
+
+Answers go to `config.local.env` (node IP, admin user/email) and `.secrets.env` (passwords).
+Both are git-ignored and readable only by root. Anything you skip can be added later with
+`sudo ./bootstrap.sh setup`. Run it unattended (no terminal) and it generates the admin
+password and skips the optional logins. `sudo ./bootstrap.sh info` shows the URLs and login.
+
+`config.env` (ports, sizes, versions) is optional to edit and contains no passwords.
 
 Requirements: k3s with the `local-path` storage class, 8 vCPU / 16+ GB RAM, NodePorts
 30080-30084 and 30022 free, outbound internet (images, charts, Ansible Galaxy, PyPI).
@@ -109,6 +120,7 @@ commit, not a code change.
 
 ```bash
 sudo ./bootstrap.sh                       # install / re-run (safe)
+sudo ./bootstrap.sh setup                 # change device / SolarWinds logins step by step
 sudo ./bootstrap.sh secret <name> <value> [...] # set values in the secret store + re-apply settings
 sudo ./bootstrap.sh status                # Argo CD apps + pods
 sudo ./bootstrap.sh info                  # URLs and logins

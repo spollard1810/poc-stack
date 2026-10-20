@@ -4,6 +4,7 @@
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GEN_DIR="$ROOT_DIR/.generated"
 SECRETS_FILE="$ROOT_DIR/.secrets.env"
+LOCAL_CONFIG="$ROOT_DIR/config.local.env"   # written by ./bootstrap.sh setup
 
 # ---- logging -----------------------------------------------------------------
 c_blu=$'\e[34m'; c_grn=$'\e[32m'; c_ylw=$'\e[33m'; c_red=$'\e[31m'; c_off=$'\e[0m'
@@ -18,6 +19,7 @@ load_config() {
   # shellcheck disable=SC1091
   set -a
   source "$ROOT_DIR/config.env"
+  [[ -f $LOCAL_CONFIG ]] && source "$LOCAL_CONFIG"
   [[ -f $SECRETS_FILE ]] && source "$SECRETS_FILE"
   set +a
 

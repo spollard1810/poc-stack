@@ -8,12 +8,14 @@
 #    External Secrets, PostgreSQL, Valkey, NetBox, AWX (+ workers), and the
 #    settings inside AWX / NetBox / Gitea (stack/config/settings.yml).
 #
-#  Usage: ./bootstrap.sh [all|preflight|status|info|publish|recover]
-#         ./bootstrap.sh secret <name> <value>    e.g. secret device_ro_username netops
+#  Usage: ./bootstrap.sh [all|setup|preflight|status|info|publish|recover]
+#         ./bootstrap.sh secret <name> <value> [...]   e.g. secret device_ro_username netops
+#  The first run asks for the node IP, admin account and logins (see lib/setup.sh).
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$0")"
 source lib/common.sh
+source lib/setup.sh
 
 SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
 
@@ -67,7 +69,7 @@ argocd_hash() {
 # the configure job added, like issued API tokens, are kept).
 store_sync() {
   local json='{}' k
-  for k in $(grep -oE '^[A-Z0-9_]+' "$SECRETS_FILE"); do
+  for k in $(grep -oE '^[A-Z0-9_]+' "$SECRETS_FILE" | grep -vE '^(POC_ADMIN_PASSWORD|SETUP_DONE)$'); do
     json=$(jq -c --arg k "${k,,}" --arg v "$(printf '%s' "${!k}" | base64 -w0)" '. + {($k): $v}' <<<"$json")
   done
   json=$(jq -c --arg u "$(printf '%s' "$POC_ADMIN_USER" | base64 -w0)" --arg p "$(printf '%s' "$POC_ADMIN_PASSWORD" | base64 -w0)" \
@@ -237,10 +239,7 @@ info() {
  Login (all four) : ${POC_ADMIN_USER} / ${POC_ADMIN_PASSWORD}
 
  Change the platform: commit to infra/stack in Gitea - Argo CD applies it.
- Device / SolarWinds logins:
-   ./bootstrap.sh secret device_ro_username <user>     (+ device_ro_password)
-   ./bootstrap.sh secret solarwinds_url https://<solarwinds>:17774
-   ./bootstrap.sh secret solarwinds_username <user>    (+ solarwinds_password)
+ Device / SolarWinds logins: ./bootstrap.sh setup
 ================================================================================
 EOF
   chmod 600 "$f"; cat "$f"
@@ -257,21 +256,25 @@ main() {
   load_config
   case $cmd in
     all)
-      ensure_secrets; preflight; argocd_hash
+      ensure_secrets
+      if setup_needed; then setup_wizard; fi
+      preflight; argocd_hash
       store_sync; foundation_secrets
       seed_gitea_argocd
       publish_repos; argocd_repo_access; store_sync
       hand_over; wait_stack; info ;;
     recover)   # break-glass: re-install Gitea + Argo CD from this checkout
-      ensure_secrets; preflight; argocd_hash; store_sync; foundation_secrets
+      ensure_secrets; [[ -n ${POC_ADMIN_PASSWORD:-} ]] || die "POC_ADMIN_PASSWORD missing from .secrets.env"
+      preflight; argocd_hash; store_sync; foundation_secrets
       seed_gitea_argocd force; ok "Gitea and Argo CD restored from the local copy" ;;
+    setup)     ensure_secrets; setup_wizard ;;
     secret)    shift; ensure_secrets; set_secret "$@" ;;
     publish)   # push this checkout's stack/ and playbooks/ to Gitea (files changed in Gitea are kept)
       ensure_secrets; publish_repos ;;
     preflight) ensure_secrets; preflight ;;
     status)    status ;;
     info)      info ;;
-    *) echo "usage: $0 [all|preflight|status|info|publish|recover] | secret <name> <value> [<name> <value> ...]"; exit 1 ;;
+    *) echo "usage: $0 [all|setup|preflight|status|info|publish|recover] | secret <name> <value> [<name> <value> ...]"; exit 1 ;;
   esac
 }
 main "$@"

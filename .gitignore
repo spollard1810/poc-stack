@@ -1,5 +1,6 @@
 # generated on first run - contains passwords
 .secrets.env
+config.local.env
 .generated/
 __pycache__/
 *.pyc
