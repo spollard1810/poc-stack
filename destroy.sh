@@ -26,7 +26,7 @@ kubectl delete externalsecrets.external-secrets.io -A --all --timeout=120s >/dev
 kubectl get externalsecrets.external-secrets.io -A -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name}{"\n"}{end}' 2>/dev/null \
   | while read -r ns name; do
       kubectl -n "$ns" patch externalsecrets.external-secrets.io "$name" --type merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
-    done
+    done || true   # no External Secrets installed (e.g. an older stack): nothing to do
 # Its admission webhooks would block deleting the other namespaces once it is gone
 kubectl get validatingwebhookconfiguration,mutatingwebhookconfiguration -o name 2>/dev/null \
   | grep -E 'externalsecret|secretstore|external-secrets' | xargs -r kubectl delete >/dev/null 2>&1 || true
@@ -39,6 +39,15 @@ kubectl delete clustersecretstore poc-store --ignore-not-found >/dev/null 2>&1 |
 for ns in poc-config awx netbox data external-secrets secret-store gitea argocd; do
   kubectl wait --for=delete "namespace/$ns" --timeout=600s >/dev/null 2>&1 || true
 done
+left=$(kubectl get ns --no-headers 2>/dev/null \
+  | awk '$1 ~ /^(poc-config|awx|netbox|data|external-secrets|secret-store|gitea|argocd)$/ {print $1}' | tr '\n' ' ')
+if [[ -n $left ]]; then
+  for ns in $left; do
+    err "namespace $ns is still there: $(kubectl get ns "$ns" -o jsonpath='{.status.phase}: {.status.conditions[?(@.status=="True")].message}' 2>/dev/null)"
+  done
+  die "not everything was deleted - re-run ./destroy.sh, and if it stays stuck, send the lines above"
+fi
+ok "namespaces and their volumes deleted"
 
 log "Removing cluster-wide leftovers (CRDs, cluster roles)"
 kubectl get crd -o name | grep -E 'argoproj.io|external-secrets.io|generators.external-secrets.io|awx.ansible.com' \
