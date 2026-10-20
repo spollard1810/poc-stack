@@ -50,7 +50,7 @@ class AddDevicesForDiscovery(Script):
     hostname = StringVar(label="Hostname", required=False, max_length=64)
     mgmt_ip = IPAddressWithMaskVar(
         label="Management IP", required=False,
-        description="With prefix length, e.g. 192.168.254.11/24",
+        description="With prefix length, e.g. 10.10.10.11/24",
     )
     platform = ObjectVar(
         model=Platform, required=False,

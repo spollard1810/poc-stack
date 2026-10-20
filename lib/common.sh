@@ -84,6 +84,15 @@ save_secret() {
   export "$k=$v"
 }
 
+# ---- IPv4 helpers --------------------------------------------------------------
+ip2int() { local a b c d; IFS=. read -r a b c d <<<"$1"; echo $(( (a << 24) | (b << 16) | (c << 8) | d )); }
+# in_cidr <ip> <net/len> -> true if the address is inside the range
+in_cidr() {
+  local net=${2%/*} len=${2#*/} mask
+  mask=$(( len == 0 ? 0 : (0xFFFFFFFF << (32 - len)) & 0xFFFFFFFF ))
+  (( ($(ip2int "$1") & mask) == ($(ip2int "$net") & mask) ))
+}
+
 # ---- templating / kube -------------------------------------------------------
 # render <template>  -> prints file with only ${VARS} that appear in it substituted
 render() {

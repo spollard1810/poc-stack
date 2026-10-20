@@ -24,6 +24,37 @@ into Gitea, and Argo CD deploys and maintains the rest, including Gitea and itse
 One login for all four: the admin account you choose during setup (default user `pocadmin`).
 Nothing in any app is visible without logging in.
 
+## Cluster networks
+
+| | Range | k3s setting |
+|---|---|---|
+| Pods | `192.168.254.0/24` | `cluster-cidr` |
+| Services | `192.168.255.0/24` | `service-cidr` (cluster DNS `192.168.255.10`) |
+| Server | its own LAN IP, outside both ranges | - |
+
+These are set when k3s is installed; the stack doesn't define networks. `./bootstrap.sh` checks
+the cluster matches `config.env` and stops if it doesn't. Devices AWX manages must also be
+outside both ranges: the cluster would treat those addresses as its own and never reach them.
+
+`/etc/rancher/k3s/config.yaml` on the server:
+```yaml
+cluster-cidr: 192.168.254.0/24
+service-cidr: 192.168.255.0/24
+cluster-dns: 192.168.255.10
+```
+
+Changing the pod or service range on an existing k3s needs a k3s reinstall, which deletes
+everything in the cluster (do it before installing the stack):
+```bash
+k3s --version                                        # note the version, e.g. v1.34.1+k3s1
+sudo cp /etc/rancher/k3s/config.yaml ~/k3s-config.yaml   # uninstall deletes /etc/rancher/k3s
+vi ~/k3s-config.yaml                                 # set the three lines above
+sudo /usr/local/bin/k3s-uninstall.sh
+sudo mkdir -p /etc/rancher/k3s && sudo cp ~/k3s-config.yaml /etc/rancher/k3s/config.yaml
+curl -sfL https://get.k3s.io | sudo INSTALL_K3S_VERSION=v1.34.1+k3s1 sh -   # same version as before
+sudo ./tools/netcheck.sh                             # node pod CIDR should be 192.168.254.0/24
+```
+
 ## Quick start
 
 ```bash

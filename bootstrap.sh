@@ -25,6 +25,23 @@ port_in_use_by_other() {  # <port> -> true if a Service outside this stack owns 
     | awk -v p="$1" '$1 !~ /^(netbox|awx|gitea|argocd)$/ { for (i = 2; i <= NF; i++) if ($i == p) found = 1 } END { exit !found }'
 }
 
+# The cluster must use the pod / service ranges in config.env (set when k3s is
+# installed; bootstrap can't change them).
+check_networks() {
+  local pod_cidr svc_ip dns_ip bad=0
+  pod_cidr=$(kubectl get nodes -o jsonpath='{.items[0].spec.podCIDR}')
+  svc_ip=$(kubectl -n default get svc kubernetes -o jsonpath='{.spec.clusterIP}')
+  dns_ip=$(kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+  in_cidr "${pod_cidr%/*}" "$POD_CIDR" || { err "pods use ${pod_cidr}, config.env says POD_CIDR=${POD_CIDR}"; bad=1; }
+  in_cidr "$svc_ip" "$SERVICE_CIDR"    || { err "services use ${svc_ip%.*}.x, config.env says SERVICE_CIDR=${SERVICE_CIDR}"; bad=1; }
+  [[ -z $dns_ip || $dns_ip == "$CLUSTER_DNS" ]] || { err "cluster DNS is ${dns_ip}, config.env says CLUSTER_DNS=${CLUSTER_DNS}"; bad=1; }
+  if in_cidr "$NODE_IP" "$POD_CIDR" || in_cidr "$NODE_IP" "$SERVICE_CIDR"; then
+    err "the server's IP ${NODE_IP} is inside the pod or service range"; bad=1
+  fi
+  (( bad == 0 )) || die "k3s network settings don't match config.env - see README \"Cluster networks\""
+  ok "networks: pods ${POD_CIDR}, services ${SERVICE_CIDR}, DNS ${CLUSTER_DNS}, server ${NODE_IP}"
+}
+
 preflight() {
   log "Preflight"
   local need=() c
@@ -43,6 +60,7 @@ preflight() {
   kubectl get nodes >/dev/null 2>&1 || die "Cannot reach the cluster. Run with sudo, or:
     mkdir -p ~/.kube && sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config && sudo chown \$USER ~/.kube/config"
   kubectl get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 || die "StorageClass '$STORAGE_CLASS' not found"
+  check_networks
   local p
   for p in "$NETBOX_PORT" "$AWX_PORT" "$GITEA_PORT" "$GITEA_SSH_PORT" "$ARGOCD_PORT" "$ARGOCD_HTTPS_PORT"; do
     (( p >= 30000 && p <= 32767 )) || die "Port $p is outside the NodePort range 30000-32767 (see config.env)"
