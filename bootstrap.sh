@@ -182,7 +182,7 @@ wait_stack() {
       -o jsonpath='{range .items[*]}{.metadata.name}={.status.sync.status}/{.status.health.status} {end}' 2>/dev/null || true)
     bad=$(tr ' ' '\n' <<<"$out" | grep -v '=Synced/Healthy$' | grep -c . || true)
     cfg=$(kubectl -n argocd get applications.argoproj.io config -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)
-    if [[ $(wc -w <<<"$out") -ge 10 && $bad == 0 && $cfg == Succeeded ]]; then ok "argo cd: $out"; return 0; fi
+    if [[ $(wc -w <<<"$out") -ge 11 && $bad == 0 && $cfg == Succeeded ]]; then ok "argo cd: $out"; return 0; fi
     if [[ $cfg == Failed || $cfg == Error ]]; then
       err "the configure job failed - see: kubectl -n poc-config logs job/configure"; return 1
     fi
@@ -200,19 +200,26 @@ resync_config() {
 
 # ------------------------------------------------------------------- secret --
 # ./bootstrap.sh secret <name> <value> : set a value in the store, then re-apply settings
+# set_secret <name> <value> [<name> <value> ...] - one configure run for all of them
 set_secret() {
-  local name=${1:?name} value=${2-}
-  [[ $name =~ ^[a-z0-9_]+$ ]] || die "use a lower-case name, e.g. device_ro_password"
-  save_secret "${name^^}" "$value"
+  (( $# >= 2 && $# % 2 == 0 )) || die "usage: secret <name> <value> [<name> <value> ...]"
+  local names=() name value want t var
+  while (( $# )); do
+    name=$1 value=$2; shift 2
+    [[ $name =~ ^[a-z0-9_]+$ ]] || die "use a lower-case name, e.g. device_ro_password"
+    save_secret "${name^^}" "$value"; names+=("$name")
+  done
   store_sync
   kubectl -n poc-config annotate externalsecret config-env force-sync="$(date +%s)" --overwrite >/dev/null 2>&1 || true
-  local want t=0; want=$(printf '%s' "$value" | base64 -w0)
-  until [[ $(kubectl -n poc-config get secret config-env -o jsonpath="{.data.${name}}" 2>/dev/null) == "$want" ]]; do
-    (( t >= 120 )) && { warn "value not picked up yet - it will be within a few minutes"; break; }
-    sleep 3; t=$((t + 3))
+  for name in "${names[@]}"; do
+    var=${name^^}; want=$(printf "%s" "${!var}" | base64 -w0); t=0
+    until [[ $(kubectl -n poc-config get secret config-env -o jsonpath="{.data.${name}}" 2>/dev/null) == "$want" ]]; do
+      (( t >= 120 )) && { warn "${name} not picked up yet - it will be within a few minutes"; break; }
+      sleep 3; t=$((t + 3))
+    done
   done
   resync_config
-  ok "${name} saved; Argo CD is re-applying the settings (configure job)"
+  ok "${names[*]} saved; Argo CD is re-applying the settings (configure job)"
 }
 
 # ------------------------------------------------------------------- output --
@@ -258,13 +265,13 @@ main() {
     recover)   # break-glass: re-install Gitea + Argo CD from this checkout
       ensure_secrets; preflight; argocd_hash; store_sync; foundation_secrets
       seed_gitea_argocd force; ok "Gitea and Argo CD restored from the local copy" ;;
-    secret)    ensure_secrets; set_secret "${2:-}" "${3-}" ;;
+    secret)    shift; ensure_secrets; set_secret "$@" ;;
     publish)   # push this checkout's stack/ and playbooks/ to Gitea (files changed in Gitea are kept)
       ensure_secrets; publish_repos ;;
     preflight) ensure_secrets; preflight ;;
     status)    status ;;
     info)      info ;;
-    *) echo "usage: $0 [all|preflight|status|info|publish|recover] | secret <name> <value>"; exit 1 ;;
+    *) echo "usage: $0 [all|preflight|status|info|publish|recover] | secret <name> <value> [<name> <value> ...]"; exit 1 ;;
   esac
 }
 main "$@"

@@ -1,0 +1,11 @@
+# Imports device types (models, interfaces, ports) from the community library into NetBox.
+# Discovery matches a device's reported part number against these types.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: netbox
+resources:
+  - externalsecret.yaml
+  - job.yaml
+configMapGenerator:
+  - name: device-type-vendors
+    envs: [vendors.env]

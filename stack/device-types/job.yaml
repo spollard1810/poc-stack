@@ -1,0 +1,28 @@
+# Runs after every sync of this app (a vendor change in vendors.env triggers one).
+#   kubectl -n netbox logs job/device-type-import
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: device-type-import
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: import
+          # Maintained fork of netbox-community/Device-Type-Library-Import (NetBox 4.5+ tokens)
+          image: ghcr.io/marcinpsk/device-type-library-import:latest
+          env:
+            - { name: NETBOX_URL, value: http://netbox.netbox.svc.cluster.local }
+            - { name: HOME, value: /tmp }
+          envFrom:
+            - secretRef: { name: device-type-import }
+            - configMapRef: { name: device-type-vendors }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }

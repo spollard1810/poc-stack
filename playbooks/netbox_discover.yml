@@ -20,7 +20,7 @@
 # with a journal entry per run. Add the "discover" tag again to re-run.
 #
 # AWX : job template "NetBox - Discover devices" (inventory "NetBox",
-#       credentials "Lab devices" + "NetBox")
+#       credentials "Devices (read-only)" + "NetBox")
 - name: Discover devices tagged in NetBox
   hosts: tags_discover:tag_discover   # group naming differs with the plugin's plurals option
   gather_facts: false
@@ -338,7 +338,7 @@
                 r.failed_modules | dict2items | map(attribute='key')
                 | zip(r.failed_modules | dict2items | map(attribute='value.msg', default='failed'))
                 | map('join', ': ') | join('; ') }}). Check that the IP is reachable from the
-              cluster and that the Lab devices credential works on it.
+              cluster and that the "Devices (read-only)" credential works on it.
               {%- elif r.censored is defined or (r.results | default([]) | selectattr('censored', 'defined') | list) -%}
               A NetBox API call failed (details hidden so the API token is not shown in job
               output). Check that NetBox is up and the NetBox credential's token is valid.

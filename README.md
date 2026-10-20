@@ -30,11 +30,8 @@ run). Nothing in any app is visible without logging in.
 git clone <this repo> poc-stack && cd poc-stack
 vi config.env                     # admin password, ports, sizes
 sudo ./bootstrap.sh               # ~25 min on first run
-sudo ./bootstrap.sh secret device_ro_username <user>       # read-only device login
-sudo ./bootstrap.sh secret device_ro_password <password>
-sudo ./bootstrap.sh secret solarwinds_url https://<solarwinds>:17774
-sudo ./bootstrap.sh secret solarwinds_username <user>
-sudo ./bootstrap.sh secret solarwinds_password <password>
+# device logins (read-only for reports, change for future write jobs) and SolarWinds:
+sudo ./bootstrap.sh secret device_ro_username <user> device_ro_password <password>                            device_rw_username <user> device_rw_password <password>                            solarwinds_url https://<solarwinds>:17774                            solarwinds_username <user> solarwinds_password <password>
 ```
 
 Requirements: k3s with the `local-path` storage class, 8 vCPU / 16+ GB RAM, NodePorts
@@ -49,6 +46,7 @@ Requirements: k3s with the `local-path` storage class, 8 vCPU / 16+ GB RAM, Node
 | PostgreSQL, Valkey, databases | `stack/data` | Argo CD |
 | NetBox, AWX operator, AWX | `stack/netbox`, `stack/awx-operator`, `stack/awx` | Argo CD |
 | Settings inside AWX, NetBox, Gitea | `stack/config/settings.yml` | Argo CD runs the configure job after every change |
+| Device types (community library) | `stack/device-types/vendors.env` | Argo CD runs the import job after every change |
 | Playbooks | `playbooks/` → Gitea `infra/playbooks` | AWX pulls on every job launch |
 
 **Change anything by committing to Gitea** (`infra/stack` or `infra/playbooks`); Argo CD
@@ -79,7 +77,9 @@ changes. API tokens the platform issues (NetBox, AWX, Gitea) are written back to
 - **Add devices for discovery** (NetBox → Customization → Scripts): hostname, IP, platform,
   or a pasted list. NetBox then launches **NetBox - Discover devices**, which logs in and
   fills in the empty fields (model by part number from the device-type library, serial, OS,
-  interfaces, IPs). It never overwrites what you entered.
+  interfaces, IPs). It never overwrites what you entered. A model that isn't in NetBox is
+  reported in the device's journal: add its vendor to `stack/device-types/vendors.env`, then
+  add the `discover` tag again.
 - **SolarWinds - Sync** (workflow, nightly): **SolarWinds - Import inventory**, then discovery.
 - **NetBox - Load devices**: devices defined in `data/netbox_devices.yml`.
 
@@ -109,7 +109,7 @@ commit, not a code change.
 
 ```bash
 sudo ./bootstrap.sh                       # install / re-run (safe)
-sudo ./bootstrap.sh secret <name> <value> # set a value in the secret store + re-apply settings
+sudo ./bootstrap.sh secret <name> <value> [...] # set values in the secret store + re-apply settings
 sudo ./bootstrap.sh status                # Argo CD apps + pods
 sudo ./bootstrap.sh info                  # URLs and logins
 sudo ./bootstrap.sh recover               # break-glass: reinstall Gitea + Argo CD from this checkout
@@ -122,6 +122,7 @@ sudo ./destroy.sh [--purge]               # wipe everything (ALL DATA)
 |---|---|
 | An app isn't Synced/Healthy | Argo CD UI → the app → events |
 | Settings not applied | `kubectl -n poc-config logs job/configure` (or the config app in Argo CD) |
+| Device types missing | `kubectl -n netbox logs job/device-type-import` |
 | A bad commit broke Gitea or Argo CD | `sudo ./bootstrap.sh recover`, then revert the commit |
 | Discovery failed for a device | The device's journal in NetBox says why; add the `discover` tag to retry |
 | SolarWinds import fails to connect | `curl -k -u user:pass "https://<server>:17774/SolarWinds/InformationService/v3/Json/Query?query=SELECT+TOP+1+NodeID+FROM+Orion.Nodes"` from the server |
