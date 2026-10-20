@@ -32,19 +32,32 @@
     repo_url: "{{ lookup('ansible.builtin.env', 'GIT_REPO_URL') }}"
     git_auth: "Authorization: Basic {{ (lookup('ansible.builtin.env', 'GIT_USERNAME') ~ ':' ~ lookup('ansible.builtin.env', 'GIT_TOKEN')) | b64encode }}"
     work: /tmp/config-backups
+    # Only name, site and config per device (keeps other host variables out of the job log)
     backed_up: >-
-      {{ groups['all'] | map('extract', hostvars) | selectattr('running_config', 'defined')
-         | selectattr('running_config.stdout', 'defined') | list }}
+      {%- set out = [] -%}
+      {%- for h in groups['all'] if hostvars[h].running_config.stdout is defined -%}
+        {%- set _ = out.append({'inventory_hostname': h,
+                                'site': (hostvars[h].sites | default(['unassigned'], true)) | first,
+                                'config': hostvars[h].running_config.stdout}) -%}
+      {%- endfor -%}
+      {{ out }}
   tasks:
     - name: Clone the backup repo
       ansible.builtin.command: git -c http.extraHeader="{{ git_auth }}" clone -q "{{ repo_url }}" "{{ work }}"
       changed_when: false
       no_log: true
 
+    - name: One folder per site
+      ansible.builtin.file:
+        path: "{{ work }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: "{{ backed_up | map(attribute='site') | unique | list }}"
+
     - name: Write configs
       ansible.builtin.copy:
-        dest: "{{ work }}/{{ item.sites | default(['unassigned']) | first }}/{{ item.inventory_hostname }}.cfg"
-        content: "{{ item.running_config.stdout }}\n"
+        dest: "{{ work }}/{{ item.site }}/{{ item.inventory_hostname }}.cfg"
+        content: "{{ item.config }}\n"
         mode: "0644"
       loop: "{{ backed_up }}"
       loop_control: { label: "{{ item.inventory_hostname }}" }
