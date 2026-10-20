@@ -32,28 +32,28 @@ Nothing in any app is visible without logging in.
 | Services | `192.168.255.0/24` | `service-cidr` (cluster DNS `192.168.255.10`) |
 | Server | its own LAN IP, outside both ranges | - |
 
-These are set when k3s is installed; the stack doesn't define networks. `./bootstrap.sh` checks
-the cluster matches `config.env` and stops if it doesn't. Devices AWX manages must also be
-outside both ranges: the cluster would treat those addresses as its own and never reach them.
+These are k3s settings; the stack doesn't define networks. `tools/k3s-setup.sh` sets up k3s
+with them, and `./bootstrap.sh` checks them and stops if they don't match `config.env`.
+Devices AWX manages must also be outside both ranges: the cluster would treat those
+addresses as its own and never reach them.
 
-`/etc/rancher/k3s/config.yaml` on the server:
-```yaml
-cluster-cidr: 192.168.254.0/24
-service-cidr: 192.168.255.0/24
-cluster-dns: 192.168.255.10
-```
-
-Changing the pod or service range on an existing k3s needs a k3s reinstall, which deletes
-everything in the cluster (do it before installing the stack):
 ```bash
-k3s --version                                        # note the version, e.g. v1.34.1+k3s1
-sudo cp /etc/rancher/k3s/config.yaml ~/k3s-config.yaml   # uninstall deletes /etc/rancher/k3s
-vi ~/k3s-config.yaml                                 # set the three lines above
-sudo /usr/local/bin/k3s-uninstall.sh
-sudo mkdir -p /etc/rancher/k3s && sudo cp ~/k3s-config.yaml /etc/rancher/k3s/config.yaml
-curl -sfL https://get.k3s.io | sudo INSTALL_K3S_VERSION=v1.34.1+k3s1 sh -   # same version as before
-sudo ./tools/netcheck.sh                             # node pod CIDR should be 192.168.254.0/24
+sudo ./tools/k3s-setup.sh --check    # read-only: does k3s match? (exit 1 if not)
+sudo ./tools/k3s-setup.sh            # install k3s, or fix its networks
 ```
+
+What it does:
+- **No k3s yet:** installs `K3S_VERSION` from `config.env` with these ranges.
+- **k3s already matches:** nothing.
+- **k3s uses other ranges:** pod and service ranges can't be changed on a running cluster,
+  so it shows a plan and, after you type the server's name, recreates the cluster. That
+  deletes what runs *inside* k3s (do it before installing the stack). The k3s version,
+  its other settings and its startup flags are kept, and the old settings and program are
+  backed up to `/root/k3s-backup-<date>/` first.
+
+**The VM itself is never touched:** its OS, IP and network settings, SSH, users, files and
+other services stay as they are. The script also refuses ranges that overlap the server's
+own addresses or routes, so it can't cut the server off the network.
 
 ## Quick start
 
