@@ -8,7 +8,7 @@
 #    sudo ./tools/k3s-setup.sh           install k3s, or show the plan and ask
 #
 #  Wanted settings come from config.env: POD_CIDR, SERVICE_CIDR, CLUSTER_DNS,
-#  and K3S_VERSION (used only when k3s isn't installed yet).
+#  and K3S_VERSION / FLANNEL_BACKEND (used only when k3s isn't installed yet).
 #
 #  Only k3s is touched. The VM, its OS, IP and network settings, SSH, users,
 #  files and other services are left alone. Recreating the cluster deletes what
@@ -135,14 +135,17 @@ install_fresh() {
   cat <<EOF
 
 k3s isn't installed. Plan:
-  - write $CFG with pods $POD_CIDR, services $SERVICE_CIDR, DNS $CLUSTER_DNS
-    (any other settings already in that file are kept)
+  - write $CFG with pods $POD_CIDR, services $SERVICE_CIDR, DNS $CLUSTER_DNS${FLANNEL_BACKEND:+,
+    flannel backend $FLANNEL_BACKEND} (any other settings already in that file are kept)
   - install k3s $K3S_VERSION with the official installer (get.k3s.io)
 EOF
   read -r -p "Install? [y/N]: " a </dev/tty || a=""
   [[ ${a,,} == y* ]] || die "nothing changed"
   mkdir -p "$CFG_DIR"
   write_config "$CFG" "$CFG.new" && mv "$CFG.new" "$CFG"
+  if [[ -n ${FLANNEL_BACKEND:-} ]] && ! grep -qE "^[[:space:]]*['\"]?flannel-backend['\"]?[[:space:]]*:" "$CFG"; then
+    printf 'flannel-backend: "%s"\n' "$FLANNEL_BACKEND" >>"$CFG"
+  fi
   log "Installing k3s $K3S_VERSION"
   curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="$K3S_VERSION" sh - >/dev/null
   verify
