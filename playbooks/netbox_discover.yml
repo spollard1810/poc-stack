@@ -101,19 +101,42 @@
                  | selectattr('key', 'match', '^[A-Za-z][A-Za-z0-9_/.:-]*[0-9]$') | items2dict }}
 
         # ---------------- device ----------------
-        - name: Find the device type for the reported part number
+        # The model in "show version" often lacks the orderable suffix the library uses
+        # (a 3850 reports WS-C3850-24P; the library has WS-C3850-24P-E/-L/-S), and
+        # Nexus reports "Nexus9000 C93180YC-FX Chassis". The chassis PID in
+        # "show inventory" is the exact part number, so Cisco devices try that first.
+        - name: Read the chassis part number (Cisco)
+          ansible.netcommon.cli_command:
+            command: show inventory
+          register: _inventory
+          failed_when: false
+          when: nb_placeholder_type and ansible_network_os in ['cisco.ios.ios', 'cisco.nxos.nxos']
+
+        - name: Part numbers to try, most exact first
+          ansible.builtin.set_fact:
+            nb_pn_candidates: >-
+              {{ ([(_inventory.stdout | default('') | regex_search('PID:\s*([^\s,]+)', '\1') or [''])[0]]
+                  + [ansible_net_model | default('')])
+                 | map('trim') | select | unique | list }}
+          when: nb_placeholder_type
+
+        - name: Find device types with those part numbers (any upper/lower case)
           ansible.builtin.uri:
-            url: "{{ nb_url }}/api/dcim/device-types/?part_number={{ ansible_net_model | default('') | urlencode }}"
+            url: "{{ nb_url }}/api/dcim/device-types/?part_number__ie={{ item | urlencode }}"
             headers: "{{ nb_api.headers }}"
             validate_certs: false
+          loop: "{{ nb_pn_candidates | default([]) }}"
           register: _dt
           delegate_to: localhost
           when: nb_placeholder_type
           no_log: true
 
-        - name: Decide the device type
+        - name: Decide the device type (first part number with exactly one match)
           ansible.builtin.set_fact:
-            nb_new_type: "{{ _dt.json.results[0] if (nb_placeholder_type and _dt.json.count | default(0) == 1) else {} }}"
+            nb_new_type: >-
+              {{ ((_dt.results | default([]) | selectattr('json', 'defined')
+                  | selectattr('json.count', 'equalto', 1) | map(attribute='json.results') | first) or [{}])[0]
+                 if nb_placeholder_type else {} }}
 
         - name: Fill in the device
           netbox.netbox.netbox_device:
@@ -322,7 +345,7 @@
             journal_text: |-
               Discovered by {{ run_ref }}.
               Hostname on device: {{ ansible_net_hostname }}
-              Model: {{ ansible_net_model | default('unknown') }}{{ ' - no device type with this part number in NetBox. Import it from the device-type library, then add the discover tag again.' if type_missing else '' }}
+              Model: {{ ansible_net_model | default('unknown') }}{{ (' (part number ' ~ nb_new_type.part_number ~ ')') if (nb_new_type and nb_new_type.part_number | lower != ansible_net_model | default('') | lower) else '' }}{{ (' - no device type in NetBox with part number ' ~ (nb_pn_candidates | default([]) | join(' or ')) ~ '. Import it from the device-type library, then add the discover tag again.') if type_missing else '' }}
               Serial: {{ ansible_net_serialnum | default('unknown') }}
               OS version: {{ ansible_net_version | default('unknown') }}
               Interfaces added: {{ nb_added }}, IPv4 addresses reported: {{ nb_ips | default([]) | length }}
