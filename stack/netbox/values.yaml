@@ -9,6 +9,13 @@ allowedHosts: ["*"]
 loginRequired: true             # no pages or API data without login
 timeZone: UTC
 
+# Every app is on the same IP (no DNS), and browsers share cookies across ports.
+# NetBox and AWX both default to a "csrftoken" cookie; NetBox's (HttpOnly) would
+# replace AWX's and break AWX's web UI ("CSRF token missing"). Own names for NetBox.
+csrf:
+  cookieName: netbox_csrftoken
+sessionCookieName: netbox_sessionid
+
 # The chart's "medium" preset caps NetBox at 1.5Gi, which NetBox 4.7 exceeds under
 # bursts of API calls (OOMKilled during discovery testing). Explicit sizing instead.
 resourcesPreset: none
