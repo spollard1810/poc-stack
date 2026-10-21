@@ -42,6 +42,20 @@ check_networks() {
   ok "networks: pods ${POD_CIDR}, services ${SERVICE_CIDR}, DNS ${CLUSTER_DNS}, server ${NODE_IP}"
 }
 
+# Before hand-over, bootstrap itself only creates gitea, argocd and secret-store;
+# netbox / awx / data come from Argo CD later. If they exist while Argo CD's root
+# app doesn't, they're from an earlier install that was never wiped - stop.
+check_leftovers() {
+  local old
+  kubectl -n argocd get applications.argoproj.io stack >/dev/null 2>&1 && return 0
+  old=$(kubectl get ns --no-headers 2>/dev/null | awk '$1 ~ /^(netbox|awx|data|poc-config|external-secrets)$/ {printf "%s ", $1}')
+  [[ -z $old ]] && return 0
+  die "found an earlier install that wasn't wiped (namespaces: ${old% }).
+    Installing on top of it fails (e.g. Gitea finds old repositories). Wipe it first:
+      sudo ./destroy.sh --purge
+    or, if this server runs nothing else in k3s, reset k3s (README \"Cluster networks\")."
+}
+
 preflight() {
   log "Preflight"
   local need=() c
@@ -61,6 +75,7 @@ preflight() {
     mkdir -p ~/.kube && sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config && sudo chown \$USER ~/.kube/config"
   kubectl get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 || die "StorageClass '$STORAGE_CLASS' not found"
   check_networks
+  check_leftovers
   local p
   for p in "$NETBOX_PORT" "$AWX_PORT" "$GITEA_PORT" "$GITEA_SSH_PORT" "$ARGOCD_PORT" "$ARGOCD_HTTPS_PORT"; do
     (( p >= 30000 && p <= 32767 )) || die "Port $p is outside the NodePort range 30000-32767 (see config.env)"
